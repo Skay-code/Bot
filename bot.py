@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Установка зависимостей (если запускаете в Jupyter Notebook или аналогичном окружении)
-
-import os
+import os
 import re
 import time
 import docx
