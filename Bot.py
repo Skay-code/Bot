@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 # Установка зависимостей (если запускаете в Jupyter Notebook или аналогичном окружении)
-!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
 
 import os
 import re
