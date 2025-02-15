@@ -274,3 +274,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+print("Файлы в текущей директории:", os.listdir())
