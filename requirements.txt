@@ -1,0 +1,7 @@
+python-docx
+docxcompose
+beautifulsoup4
+ebooklib
+aiogram
+aiofiles
+nest_asyncio
