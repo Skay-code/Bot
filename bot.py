@@ -33,7 +33,7 @@ def timer(func):
     return wrapper
 
 # Замените токен на свой
-API_TOKEN = ''
+API_TOKEN = '7692853253:AAHGfbJhall58TafIqTBdAujVnuXhhHCwYk'
 
 bot = Bot(token=API_TOKEN)
 router = Router()
@@ -68,6 +68,8 @@ async def convert_epub_to_docx(epub_file, docx_file):
                             elif sub.name == 'em':
                                 run = doc_paragraph.add_run(sub.get_text())
                                 run.italic = True
+                            else:
+                                doc_paragraph.add_run(sub.get_text())
                         else:
                             # Если это просто текст
                             doc_paragraph.add_run(sub)
