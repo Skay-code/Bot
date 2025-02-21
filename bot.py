@@ -21,7 +21,7 @@ import asyncio
 import nest_asyncio
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
-from aiogram.fsm.group import StatesGroup
+from aiogram.fsm.state import StatesGroup
 nest_asyncio.apply()
 
 # Декоратор для измерения времени выполнения функции
