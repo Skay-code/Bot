@@ -12,14 +12,16 @@ from bs4 import BeautifulSoup
 import ebooklib
 from ebooklib import epub
 from aiogram import Bot, Router, types, F, Dispatcher
-from aiogram.types import Message
-from aiogram.types import FSInputFile
+from aiogram.types import Message, FSInputFile
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.utils import markdown as md
 import aiofiles
 import asyncio
 import nest_asyncio
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State
+from aiogram.fsm.group import StatesGroup
 nest_asyncio.apply()
 
 # Декоратор для измерения времени выполнения функции
@@ -37,9 +39,6 @@ API_TOKEN = '7692853253:AAHGfbJhall58TafIqTBdAujVnuXhhHCwYk'
 
 bot = Bot(token=API_TOKEN)
 router = Router()
-
-# Глобальный словарь для хранения состояния пользователей
-user_states = {}
 
 # Имя итогового файла по умолчанию
 output_file_name = "merged.docx"
@@ -185,76 +184,97 @@ async def merge_docx(file_list, output_file_name):
     print(f"Файлы объединены в {output_file_name}")
     return output_file_name
 
+# ===================== FSM: Состояния =====================
+class MergeStates(StatesGroup):
+    collecting = State()  # Состояние сбора файлов
+
 # ===================== Обработчики Telegram-бота =====================
 @router.message(Command("start_merge"))
-async def start_merge(message: Message):
+async def start_merge(message: Message, state: FSMContext):
     """
     Команда для начала сбора файлов.
     """
-    chat_id = message.chat.id
-    if chat_id in user_states and user_states[chat_id]['is_collecting']:
+    current_state = await state.get_state()
+    if current_state == MergeStates.collecting.state:
         await message.answer("Сбор файлов уже запущен.")
         return
-    user_states[chat_id] = {'is_collecting': True, 'file_list': []}
+
+    await state.set_state(MergeStates.collecting)
+    await state.update_data(file_list=[])  # Создаем пустой список файлов
     await message.answer("Сбор файлов начат! Отправляйте файлы. Используйте /end_merge для завершения.")
 
 @router.message(Command("end_merge"))
-async def end_merge(message: Message):
+async def end_merge(message: Message, state: FSMContext):
     """
     Команда для завершения сбора файлов и запуска объединения.
     """
-    chat_id = message.chat.id
-    if chat_id not in user_states or not user_states[chat_id]['is_collecting']:
+    current_state = await state.get_state()
+    if current_state != MergeStates.collecting.state:
         await message.answer("Сбор файлов не был запущен. Введите /start_merge для начала.")
         return
-    file_list = user_states[chat_id]['file_list']
+
+    user_data = await state.get_data()
+    file_list = user_data.get('file_list', [])
+
     if not file_list:
         await message.answer("Нет файлов для обработки!")
-        user_states[chat_id]['is_collecting'] = False
+        await state.clear()  # Очищаем состояние
         return
+
     # Обработка и конвертация файлов
     converted_files = await process_files(file_list)
     merged_file = await merge_docx(converted_files, output_file_name)
+
     # Формируем сообщение с информацией о собранных файлах
     file_list_str = "\n".join(file_list)
     await message.answer(f"Файлы объединены в {output_file_name}.\nСобрано {len(file_list)} файлов:\n{file_list_str}")
+
     # Отправляем объединённый файл обратно пользователю
     try:
        document = FSInputFile(merged_file)
        await message.answer_document(document, caption="Ваш объединённый документ")
     except Exception as e:
         await message.answer(f"Ошибка при отправке объединённого файла: {str(e)}")
+
     # Сброс состояния
-    user_states[chat_id] = {'is_collecting': False, 'file_list': []}
+    await state.clear()
 
 @router.message(F.document)
-async def handle_document(message: Message):
+async def handle_document(message: Message, state: FSMContext):
     """
     Обработчик полученных файлов.
     Если сбор файлов запущен, сохраняет полученный документ на диск
     и добавляет его имя в список для дальнейшей обработки.
     """
-    chat_id = message.chat.id
-    if chat_id not in user_states or not user_states[chat_id]['is_collecting']:
+    current_state = await state.get_state()
+    if current_state != MergeStates.collecting.state:
         await message.answer("Сбор файлов не запущен. Введите /start_merge для начала.")
         return
+
     try:
         file_info = await bot.get_file(message.document.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
         file_name = message.document.file_name
         base_name, extension = os.path.splitext(file_name)
         counter = 1
+
         if extension not in (".docx", ".fb2", ".txt", ".epub"):
             await message.answer(f"Неизвестный формат файла: {file_name}. Пожалуйста, отправляйте файлы только в форматах docx, fb2, epub, txt.")
         else:
-            # Проверяем, существует ли файл, и добавляем суффикс, если нужно
             while os.path.exists(file_name):
                 file_name = f"{base_name}({counter}){extension}"
                 counter += 1
+
             # Сохраняем файл на диск
             async with aiofiles.open(file_name, 'wb') as new_file:
                 await new_file.write(downloaded_file.read())
-            user_states[chat_id]['file_list'].append(file_name)
+
+            # Добавляем файл в список
+            user_data = await state.get_data()
+            file_list = user_data.get('file_list', [])
+            file_list.append(file_name)
+            await state.update_data(file_list=file_list)
+
             await message.answer(f"Файл {file_name} сохранён!")
     except Exception as e:
         await message.answer(f"Ошибка при сохранении файла: {str(e)}")
@@ -276,4 +296,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
