@@ -3,7 +3,7 @@
 # -*- coding: utf-8 -*-
 
 # Установка зависимостей
-#!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
+!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
 
 import os
 import re
@@ -194,39 +194,23 @@ async def check_and_add_title(doc, file_name):
 
 @timer
 async def merge_docx(file_list, output_file_name):
-    def _merge(files_to_merge):
-        # Создаем новый документ
-        merged_document = Document(files_to_merge[0])
-        composer = Composer(merged_document)
-
-        for file in files_to_merge[1:]:
-            doc = Document(file)
-            composer.append(doc)
-
-        # Сохраняем итоговый документ
-        composer.save(output_file_name)
-        print(f"Файлы объединены в {output_file_name}")
-        return output_file_name
-
-    # Сначала обрабатываем заголовки для всех файлов
-    processed_files = []
-    for file in file_list:
-        doc = Document(file)
-        processed_doc = await check_and_add_title(doc, file)
-
-        # Сохраняем промежуточный файл с добавленным заголовком
-        temp_file = f"temp_{os.path.basename(file)}"
-        processed_doc.save(temp_file)
-        processed_files.append(temp_file)
+    def _merge():
+         # Создаем новый документ
+         merged_document = Document(file_list[0])
+         merged_document = check_and_add_title(merged_document, file_list[0])
+         composer = Composer(merged_document)
+         for file in file_list[1:]:
+             doc = Document(file)
+             # Проверяем и добавляем название главы при необходимости
+             doc = check_and_add_title(doc, file)
+             composer.append(doc)
+         # Сохраняем итоговый документ
+         composer.save(output_file_name)
+         print(f"Файлы объединены в {output_file_name}")
+         return output_file_name
 
     # Объединяем обработанные файлы в отдельном потоке
-    result = await run_in_threadpool(_merge, processed_files)
-
-    # Удаляем временные файлы
-    for file in processed_files:
-        if os.path.exists(file):
-            os.remove(file)
-
+    result = await run_in_threadpool(_merge)
     return result
 
 # ===================== FSM: Состояния =====================
