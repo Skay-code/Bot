@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -44,7 +43,7 @@ def timer(func):
     return wrapper
 
 # Замените токен на свой
-#PI_TOKEN = '7692853253:AAHGfbJhall58TafIqTBdAujVnuXhhHCwYk'
+API_TOKEN = '7692853253:AAHGfbJhall58TafIqTBdAujVnuXhhHCwYk'
 
 bot = Bot(token=API_TOKEN)
 router = Router()
@@ -112,7 +111,7 @@ async def convert_fb2_to_docx(fb2_file, docx_file):
                                 run = doc_paragraph.add_run(sub.get_text())
                                 run.italic = True
                             else:
-                                    doc_paragraph.add_run(sub.get_text())
+                                doc_paragraph.add_run(sub.get_text())
                         else:
                             doc_paragraph.add_run(sub)
         document.save(docx_file)
@@ -156,41 +155,38 @@ async def process_files(file_list):
             converted_files.append(docx_file)
     return converted_files
 
-# ===================== Неблокирующие функции для работы с документами =====================
-async def check_and_add_title(doc, file_name):
-    def _process():
-        """
-        Проверяет первые абзацы документа на наличие заголовка (например, "Глава ...").
-        Если заголовок не найден, добавляет его на основе имени файла.
-        """
-        patterns = [
-            r'Глава[ ]{0,4}\d{1,4}',
-            r'Часть[ ]{0,4}\d{1,4}',
-            r'^Пролог[ .!]*$',
-            r'^Описание[ .!]*$',
-            r'^Аннотация[ .!]*$',
-            r'^Annotation[ .!]*$',
-            r'^Предисловие от автора[ .!]*$'
-        ]
-        if doc.paragraphs:
-            check_paragraphs = doc.paragraphs[0:4]
-            title_found = False
-            for p in check_paragraphs:
-                for pattern in patterns:
-                    if re.search(pattern, p.text):
-                        title_found = True
-                        break
-                if title_found:
+# ===================== Неблокирующие функции для работы с документами =====
+def check_and_add_title(doc, file_name):
+    """
+    Проверяет первые абзацы документа на наличие заголовка (например, "Глава ...").
+    Если заголовок не найден, добавляет его на основе имени файла.
+    """
+    patterns = [
+        r'Глава[ ]{0,4}\d{1,4}',
+        r'Часть[ ]{0,4}\d{1,4}',
+        r'^Пролог[ .!]*$',
+        r'^Описание[ .!]*$',
+        r'^Аннотация[ .!]*$',
+        r'^Annotation[ .!]*$',
+        r'^Предисловие от автора[ .!]*$'
+    ]
+    if doc.paragraphs:
+        check_paragraphs = doc.paragraphs[0:4]
+        title_found = False
+        for p in check_paragraphs:
+            for pattern in patterns:
+                if re.search(pattern, p.text):
+                    title_found = True
                     break
-            if not title_found:
-                # Добавляем заголовок перед первым абзацем
-                title = os.path.splitext(os.path.basename(file_name))[0]
-                title_run = doc.paragraphs[0].insert_paragraph_before().add_run(f"{title}\n")
-                # Форматирование заголовка
-                title_run.bold = True
-        return doc
-
-    return await run_in_threadpool(_process)
+            if title_found:
+                break
+        if not title_found:
+            # Добавляем заголовок перед первым абзацем
+            title = os.path.splitext(os.path.basename(file_name))[0]
+            title_run = doc.paragraphs[0].insert_paragraph_before().add_run(f"{title}\n")
+            # Форматирование заголовка
+            title_run.bold = True
+    return doc
 
 @timer
 async def merge_docx(file_list, output_file_name):
