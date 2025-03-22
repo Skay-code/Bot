@@ -27,10 +27,88 @@ from aiogram.fsm.state import State
 from aiogram.fsm.state import StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from functools import partial
+from collections import deque
 nest_asyncio.apply()
 
 # Создаем пул потоков для выполнения CPU-bound задач
-thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+# Система очереди
+class TaskQueue:
+    def __init__(self, max_concurrent_tasks=5):
+        self.queue = deque()  # Очередь задач
+        self.active_tasks = {}  # Активные задачи: task_id -> task (вместо user_id -> task)
+        self.max_concurrent_tasks = max_concurrent_tasks
+        self.task_counter = 0  # Счетчик задач для назначения номера очереди
+        self.user_tasks = {}  # Новый словарь: user_id -> [task_id1, task_id2, ...]
+
+    def add_task(self, user_id, file_list, output_file_name):
+        """Добавляет задачу в очередь и возвращает уникальный ID задачи и позицию в очереди"""
+        self.task_counter += 1
+        task_id = self.task_counter
+        task = {
+            'user_id': user_id,
+            'file_list': file_list,
+            'output_file_name': output_file_name,
+            'task_id': task_id,
+            'time_added': time.time()
+        }
+        self.queue.append(task)
+
+        # Добавляем задачу в список задач пользователя
+        if user_id not in self.user_tasks:
+            self.user_tasks[user_id] = []
+        self.user_tasks[user_id].append(task_id)
+
+        return task_id, len(self.queue)
+
+    def get_next_task(self):
+        """Получить следующую задачу из очереди"""
+        if not self.queue:
+            return None
+        task = self.queue.popleft()
+        self.active_tasks[task['task_id']] = task  # Используем task_id вместо user_id
+        return task
+
+    def complete_task(self, task_id):
+        """Пометить задачу как завершенную"""
+        if task_id in self.active_tasks:
+            task = self.active_tasks[task_id]
+            user_id = task['user_id']
+
+            # Удаляем задачу из active_tasks
+            del self.active_tasks[task_id]
+
+            # Удаляем задачу из списка задач пользователя
+            if user_id in self.user_tasks and task_id in self.user_tasks[user_id]:
+                self.user_tasks[user_id].remove(task_id)
+
+                # Если у пользователя больше нет задач, удаляем его из словаря
+                if not self.user_tasks[user_id]:
+                    del self.user_tasks[user_id]
+
+    def get_user_tasks(self, user_id):
+        """Получить список всех задач пользователя (в очереди и активных)"""
+        tasks = []
+
+        # Ищем в очереди
+        for task in self.queue:
+            if task['user_id'] == user_id:
+                tasks.append(task)
+
+        # Ищем в активных задачах
+        for task_id, task in self.active_tasks.items():
+            if task['user_id'] == user_id:
+                tasks.append(task)
+
+        return tasks
+
+    def can_process_now(self):
+        """Проверка, можно ли обработать следующую задачу из очереди"""
+        return len(self.active_tasks) < self.max_concurrent_tasks and self.queue
+
+# Создаем очередь задач
+task_queue = TaskQueue(max_concurrent_tasks=1)  # Максимум 5 одновременных задач
 
 # Декоратор для измерения времени выполнения функции
 def timer(func):
@@ -224,9 +302,123 @@ async def start_merge(message: Message, state: FSMContext):
         await message.answer("Сбор файлов уже запущен.")
         return
 
+    # Теперь мы не проверяем, есть ли у пользователя активная задача
+    # Просто начинаем новый сбор файлов
+
     await state.set_state(MergeStates.collecting)
     await state.update_data(file_list=[])  # Создаем пустой список файлов
-    await message.answer("Сбор файлов начат! Отправляйте файлы. Используйте /end_merge для завершения.")
+    await message.answer("Сбор файлов начат! Отправляйте файлы. Используйте /end_merge для завершения или /cancel для отмены.")
+
+@router.message(Command("queue_status"))
+async def queue_status(message: Message):
+    """
+    Проверка статуса очереди.
+    """
+    user_id = message.from_user.id
+    user_tasks = task_queue.get_user_tasks(user_id)
+    print(user_tasks)
+    if not user_tasks:
+        total_tasks = len(task_queue.queue)
+        active_tasks = len(task_queue.active_tasks)
+        await message.answer(f"У вас нет задач в очереди.\nСтатус системы: {active_tasks}/{task_queue.max_concurrent_tasks} активных задач, {total_tasks} задач в очереди.")
+        return
+
+    # Формируем сообщение со списком задач пользователя
+    tasks_info = []
+    for task in user_tasks:
+        task_id = task['task_id']
+
+        # Проверяем, активна ли задача
+        if task_id in task_queue.active_tasks:
+            status = "⚙️ Выполняется"
+        else:
+            # Ищем позицию в очереди
+            for i, queued_task in enumerate(task_queue.queue):
+                if queued_task['task_id'] == task_id:
+                    status = f"🕒 В очереди (позиция {i+1})"
+                    break
+
+        # Создаем имя задачи из первого файла в списке
+        task_name = os.path.basename(task['file_list'][0])
+        if len(task['file_list']) > 1:
+            task_name += f" и еще {len(task['file_list'])-1} файлов"
+
+        tasks_info.append(f"Задача #{task_id}: {task_name} - {status}")
+    await message.answer("Ваши задачи:\n\n" + "\n".join(tasks_info) + "\nВы можете отменить задачу с помощью /cancel_task")
+
+@router.message(Command("cancel"))
+async def cancel_collecting(message: Message, state: FSMContext):
+    """
+    Отмена сбора файлов.
+    """
+    current_state = await state.get_state()
+    if current_state != MergeStates.collecting.state:
+        await message.answer("Сбор файлов не был запущен.")
+        return
+
+    # Получаем список файлов, чтобы удалить их
+    user_data = await state.get_data()
+    file_list = user_data.get('file_list', [])
+
+    # Удаляем временные файлы
+    for file in file_list:
+        if os.path.exists(file):
+            os.remove(file)
+
+    await state.clear()
+    await message.answer("Сбор файлов отменен. Все временные файлы удалены.")
+
+@router.message(Command("cancel_task"))
+async def cancel_specific_task(message: Message):
+    """
+    Отмена конкретной задачи по ID.
+    """
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Пожалуйста, укажите ID задачи: /cancel_task_id <task_id>")
+        return
+
+    try:
+        task_id = int(args[1])
+    except ValueError:
+        await message.answer("ID задачи должен быть числом")
+        return
+
+    user_id = message.from_user.id
+
+    # Ищем задачу в очереди
+    found = False
+    new_queue = deque()
+    for task in task_queue.queue:
+        if task['task_id'] == task_id:
+            if task['user_id'] == user_id:
+                found = True
+                # Удаляем временные файлы
+                for file in task['file_list']:
+                    if os.path.exists(file):
+                        os.remove(file)
+            else:
+                # Задача существует, но принадлежит другому пользователю
+                await message.answer("Вы не можете отменить чужую задачу")
+                return
+        else:
+            new_queue.append(task)
+
+    if found:
+        # Обновляем очередь
+        task_queue.queue = new_queue
+
+        # Удаляем task_id из списка задач пользователя
+        if user_id in task_queue.user_tasks and task_id in task_queue.user_tasks[user_id]:
+            task_queue.user_tasks[user_id].remove(task_id)
+
+        await message.answer(f"Задача #{task_id} удалена из очереди")
+    else:
+        # Проверяем, не выполняется ли задача в данный момент
+        if task_id in task_queue.active_tasks and task_queue.active_tasks[task_id]['user_id'] == user_id:
+            await message.answer(f"Задача #{task_id} уже выполняется и не может быть отменена")
+        else:
+            await message.answer(f"Задача #{task_id} не найдена")
 
 @router.message(Command("end_merge"))
 async def end_merge(message: Message, state: FSMContext):
@@ -246,21 +438,45 @@ async def end_merge(message: Message, state: FSMContext):
         await state.clear()  # Очищаем состояние
         return
 
-    # Сообщаем пользователю, что начинаем обработку
-    await message.answer(f"Начинаю обработку {len(file_list)} файлов. Это может занять некоторое время...")
-
     # Создаем уникальное имя выходного файла для этого пользователя
-    user_output_file = f"merged_{message.from_user.id}_{int(time.time())}.docx"
+    user_id = message.from_user.id
+    user_output_file = "merged.docx"
 
-    # Асинхронно обрабатываем файлы в фоновом режиме
-    asyncio.create_task(process_and_merge_files(message, file_list, user_output_file, state))
+    # Добавляем задачу в очередь
+    task_id, queue_position = task_queue.add_task(user_id, file_list, user_output_file)
 
-    # Сброс состояния после запуска задачи
+    if queue_position > 1:
+        await message.answer(f"Ваша задача добавлена в очередь на позицию {queue_position}. Примерное время ожидания: {queue_position * 2} минут(ы). Используйте /queue_status для проверки статуса.")
+    else:
+        await message.answer("Ваша задача добавлена в очередь и будет обработана в ближайшее время.")
+
+    # Очищаем состояние после добавления задачи в очередь
     await state.clear()
 
-async def process_and_merge_files(message, file_list, output_file_name, state):
+    # Пытаемся запустить обработку задачи, если есть свободные потоки
+    asyncio.create_task(check_and_process_queue())
+
+async def check_and_process_queue():
     """
-    Асинхронная функция для обработки и объединения файлов в фоновом режиме.
+    Проверяет очередь и запускает обработку новых задач, если есть свободные ресурсы.
+    """
+    while task_queue.can_process_now():
+        task = task_queue.get_next_task()
+        if task:
+            user_id = task['user_id']
+            file_list = task['file_list']
+            output_file_name = task['output_file_name']
+            task_id = task['task_id']
+
+            # Уведомляем пользователя о начале обработки
+            await bot.send_message(user_id, f"Начинаю обработку задачи #{task_id} с {len(file_list)} файлами. Это может занять некоторое время...")
+
+            # Запускаем обработку в фоновом режиме
+            asyncio.create_task(process_and_merge_files_with_queue(user_id, file_list, output_file_name, task_id))
+
+async def process_and_merge_files_with_queue(user_id, file_list, output_file_name, task_id):
+    """
+    Асинхронная функция для обработки и объединения файлов с учетом очереди.
     """
     try:
         # Обработка и конвертация файлов
@@ -269,11 +485,11 @@ async def process_and_merge_files(message, file_list, output_file_name, state):
 
         # Формируем сообщение с информацией о собранных файлах
         file_list_str = "\n".join([os.path.basename(f) for f in file_list])
-        await message.answer(f"Файлы объединены в {os.path.basename(output_file_name)}.\nСобрано {len(file_list)} файлов:\n{file_list_str}")
+        await bot.send_message(user_id, f"Задача #{task_id} завершена!\nФайлы объединены в {os.path.basename(output_file_name)}.\nСобрано {len(file_list)} файлов:\n{file_list_str}")
 
         # Отправляем объединённый файл обратно пользователю
         document = FSInputFile(merged_file)
-        await message.answer_document(document, caption="Ваш объединённый документ")
+        await bot.send_document(user_id, document, caption=f"Результат задачи #{task_id}")
 
         # Удаляем временные файлы
         for file in file_list:
@@ -285,7 +501,13 @@ async def process_and_merge_files(message, file_list, output_file_name, state):
             os.remove(merged_file)
 
     except Exception as e:
-        await message.answer(f"Произошла ошибка при обработке файлов: {str(e)}")
+        await bot.send_message(user_id, f"Произошла ошибка при обработке задачи #{task_id}: {str(e)}")
+    finally:
+        # Отмечаем задачу как выполненную
+        task_queue.complete_task(task_id)  # Теперь передаем task_id вместо user_id
+
+        # Проверяем, можно ли обработать следующую задачу
+        asyncio.create_task(check_and_process_queue())
 
 @router.message(F.document)
 async def handle_document(message: Message, state: FSMContext):
@@ -306,7 +528,6 @@ async def handle_document(message: Message, state: FSMContext):
 
         # Добавляем user_id к имени файла, чтобы избежать конфликтов между пользователями
         base_name, extension = os.path.splitext(file_name)
-        file_name = f"{base_name}_{message.from_user.id}{extension}"
         counter = 1
 
         if extension.lower() not in (".docx", ".fb2", ".txt", ".epub"):
@@ -314,7 +535,7 @@ async def handle_document(message: Message, state: FSMContext):
             return
 
         while os.path.exists(file_name):
-            file_name = f"{base_name}_{message.from_user.id}({counter}){extension}"
+            file_name = f"{base_name}({counter}){extension}"
             counter += 1
 
         # Сохраняем файл на диск
@@ -337,7 +558,24 @@ async def send_welcome(message: Message):
 
 @router.message(Command("info"))
 async def send_info(message: Message):
-    await message.answer("Данный бот объединяет файлы в формате docx. Если формат файла не docx, то файл конвертируется в этот формат и объединяется. Для конвертации поддерживаются форматы fb2, epub, txt. В процессе конвертации сохраняется лишь текст, жирный и курсивный формат и оглавление, всё остальное теряется. Для начала работы нажми на /start_merge. После отправь файлы и нажми на /end_merge, чтобы завершить работу. Удачи!")
+    keyboard = ReplyKeyboardBuilder()
+    keyboard.add(types.KeyboardButton(text="/start_merge"))
+    keyboard.add(types.KeyboardButton(text="/end_merge"))
+    keyboard.add(types.KeyboardButton(text="/cancel"))
+    keyboard.add(types.KeyboardButton(text="/queue_status"))
+    keyboard.adjust(2)
+
+    await message.answer(
+        "Данный бот объединяет файлы в формате docx. Если формат файла не docx, то файл конвертируется в этот формат и объединяется. "
+        "Для конвертации поддерживаются форматы fb2, epub, txt. В процессе конвертации сохраняется лишь текст, жирный и курсивный формат и оглавление, всё остальное теряется.\n\n"
+        "Команды:\n"
+        "/start_merge - Начать сбор файлов\n"
+        "/end_merge - Завершить сбор и добавить задачу в очередь\n"
+        "/cancel - Отменить текущий сбор файлов\n"
+        "/cancel_task - Отменить задачу в очереди\n"
+        "/queue_status - Проверить статус вашей задачи в очереди",
+        reply_markup=keyboard.as_markup(resize_keyboard=True)
+    )
 
 # ===================== Запуск бота =====================
 async def main():
