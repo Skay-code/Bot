@@ -290,6 +290,7 @@ async def merge_docx(file_list, output_file_name):
 # ===================== FSM: Состояния =====================
 class MergeStates(StatesGroup):
     collecting = State()  # Состояние сбора файлов
+    naming_file = State() # Состояние запроса имени файла
 
 # ===================== Обработчики Telegram-бота =====================
 @router.message(Command("start_merge"))
@@ -316,7 +317,6 @@ async def queue_status(message: Message):
     """
     user_id = message.from_user.id
     user_tasks = task_queue.get_user_tasks(user_id)
-    print(user_tasks)
     if not user_tasks:
         total_tasks = len(task_queue.queue)
         active_tasks = len(task_queue.active_tasks)
@@ -361,7 +361,8 @@ async def cancel_collecting(message: Message, state: FSMContext):
     file_list = user_data.get('file_list', [])
 
     # Удаляем временные файлы
-    for file in file_list:
+    for file_item in file_list:
+        file = file_item[0]
         if os.path.exists(file):
             os.remove(file)
 
@@ -423,7 +424,7 @@ async def cancel_specific_task(message: Message):
 @router.message(Command("end_merge"))
 async def end_merge(message: Message, state: FSMContext):
     """
-    Команда для завершения сбора файлов и запуска объединения.
+    Команда для завершения сбора файлов и запроса имени выходного файла.
     """
     current_state = await state.get_state()
     if current_state != MergeStates.collecting.state:
@@ -438,21 +439,73 @@ async def end_merge(message: Message, state: FSMContext):
         await state.clear()  # Очищаем состояние
         return
 
-    # Создаем уникальное имя выходного файла для этого пользователя
+    # Переходим к состоянию запроса имени файла
+    await state.set_state(MergeStates.naming_file)
+
+    # Создаем клавиатуру с кнопкой "Пропустить"
+    keyboard = ReplyKeyboardBuilder()
+    keyboard.add(types.KeyboardButton(text="Пропустить"))
+    keyboard.adjust(1)
+
+    await message.answer(
+        "Введите название для итогового файла или нажмите 'Пропустить' для использования стандартного имени (merged.docx):",
+        reply_markup=keyboard.as_markup(resize_keyboard=True)
+    )
+
+@router.message(MergeStates.naming_file)
+async def process_filename(message: Message, state: FSMContext):
+    """
+    Обработка введенного имени файла или кнопки "Пропустить".
+    """
     user_id = message.from_user.id
-    user_output_file = "merged.docx"
-
-    # Добавляем задачу в очередь
-    task_id, queue_position = task_queue.add_task(user_id, file_list, user_output_file)
-
-    if queue_position > 1:
-        await message.answer(f"Ваша задача добавлена в очередь на позицию {queue_position}. Примерное время ожидания: {queue_position * 2} минут(ы). Используйте /queue_status для проверки статуса.")
+    user_data = await state.get_data()
+    file_list = user_data.get('file_list', [])
+    
+    # Сортируем файлы по ID сообщения (второй элемент кортежа)
+    file_list.sort(key=lambda x: x[1])
+    
+    # Извлекаем только имена файлов после сортировки
+    sorted_files = [file[0] for file in file_list]
+    
+    # Определяем имя выходного файла
+    if message.text == "Пропустить":
+        output_file_name = "merged.docx"
     else:
-        await message.answer("Ваша задача добавлена в очередь и будет обработана в ближайшее время.")
-
+        # Проверяем, что имя файла заканчивается на .docx
+        if not message.text.lower().endswith('.docx'):
+            output_file_name = message.text + ".docx"
+        else:
+            output_file_name = message.text
+    
+    # Добавляем задачу в очередь с отсортированным списком файлов
+    task_id, queue_position = task_queue.add_task(user_id, sorted_files, output_file_name)
+    
+    # Возвращаем обычную клавиатуру
+    keyboard = ReplyKeyboardBuilder()
+    keyboard.add(types.KeyboardButton(text="/start_merge"))
+    keyboard.add(types.KeyboardButton(text="/end_merge"))
+    keyboard.add(types.KeyboardButton(text="/cancel"))
+    keyboard.add(types.KeyboardButton(text="/queue_status"))
+    keyboard.adjust(2)
+    
+    if queue_position > 1:
+        await message.answer(
+            f"Итоговый файл будет назван: {output_file_name}\n"
+            f"Ваша задача добавлена в очередь на позицию {queue_position}. "
+            f"Примерное время ожидания: {queue_position * 2} минут(ы). "
+            f"Используйте /queue_status для проверки статуса.",
+            reply_markup=keyboard.as_markup(resize_keyboard=True)
+        )
+    else:
+        await message.answer(
+            f"Итоговый файл будет назван: {output_file_name}\n"
+            f"Ваша задача добавлена в очередь и будет обработана в ближайшее время.",
+            reply_markup=keyboard.as_markup(resize_keyboard=True)
+        )
+    
     # Очищаем состояние после добавления задачи в очередь
     await state.clear()
-
+    
     # Пытаемся запустить обработку задачи, если есть свободные потоки
     asyncio.create_task(check_and_process_queue())
 
@@ -542,10 +595,11 @@ async def handle_document(message: Message, state: FSMContext):
         async with aiofiles.open(file_name, 'wb') as new_file:
             await new_file.write(downloaded_file.read())
 
-        # Добавляем файл в список
+        # Добавляем файл в список вместе с ID сообщения
         user_data = await state.get_data()
         file_list = user_data.get('file_list', [])
-        file_list.append(file_name)
+        # Теперь храним кортеж (имя_файла, id_сообщения)
+        file_list.append((file_name, message.message_id))
         await state.update_data(file_list=file_list)
 
         await message.answer(f"Файл {message.document.file_name} сохранён! Всего файлов: {len(file_list)}")
