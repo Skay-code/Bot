@@ -460,13 +460,13 @@ async def process_filename(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user_data = await state.get_data()
     file_list = user_data.get('file_list', [])
-    
+
     # Сортируем файлы по ID сообщения (второй элемент кортежа)
     file_list.sort(key=lambda x: x[1])
-    
+
     # Извлекаем только имена файлов после сортировки
     sorted_files = [file[0] for file in file_list]
-    
+
     # Определяем имя выходного файла
     if message.text == "Пропустить":
         output_file_name = "merged.docx"
@@ -476,10 +476,10 @@ async def process_filename(message: Message, state: FSMContext):
             output_file_name = message.text + ".docx"
         else:
             output_file_name = message.text
-    
+
     # Добавляем задачу в очередь с отсортированным списком файлов
     task_id, queue_position = task_queue.add_task(user_id, sorted_files, output_file_name)
-    
+
     # Возвращаем обычную клавиатуру
     keyboard = ReplyKeyboardBuilder()
     keyboard.add(types.KeyboardButton(text="/start_merge"))
@@ -487,7 +487,7 @@ async def process_filename(message: Message, state: FSMContext):
     keyboard.add(types.KeyboardButton(text="/cancel"))
     keyboard.add(types.KeyboardButton(text="/queue_status"))
     keyboard.adjust(2)
-    
+
     if queue_position > 1:
         await message.answer(
             f"Итоговый файл будет назван: {output_file_name}\n"
@@ -502,10 +502,10 @@ async def process_filename(message: Message, state: FSMContext):
             f"Ваша задача добавлена в очередь и будет обработана в ближайшее время.",
             reply_markup=keyboard.as_markup(resize_keyboard=True)
         )
-    
+
     # Очищаем состояние после добавления задачи в очередь
     await state.clear()
-    
+
     # Пытаемся запустить обработку задачи, если есть свободные потоки
     asyncio.create_task(check_and_process_queue())
 
@@ -621,7 +621,7 @@ async def send_info(message: Message):
 
     await message.answer(
         "Данный бот объединяет файлы в формате docx. Если формат файла не docx, то файл конвертируется в этот формат и объединяется. "
-        "Для конвертации поддерживаются форматы fb2, epub, txt. В процессе конвертации сохраняется лишь текст, жирный и курсивный формат и оглавление, всё остальное теряется.\n\n"
+        "Для конвертации поддерживаются форматы fb2, epub, txt. В процессе конвертации сохраняется лишь текст, жирный и курсивный формат, оглавление, всё остальное теряется.\n\n"
         "Команды:\n"
         "/start_merge - Начать сбор файлов\n"
         "/end_merge - Завершить сбор и добавить задачу в очередь\n"
