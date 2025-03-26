@@ -28,10 +28,56 @@ from aiogram.fsm.state import StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from functools import partial
 from collections import deque
+from datetime import datetime, timezone, timedelta
 nest_asyncio.apply()
 
 # Создаем пул потоков для выполнения CPU-bound задач
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+class UserLimits:
+    def __init__(self):
+        self.user_data = {}  # {user_id: {'files_today': int}}
+        self.last_global_reset = self._get_last_utc_midnight()
+
+    def _get_last_utc_midnight(self):
+        """Возвращает последнюю полночь по UTC."""
+        now = datetime.now(timezone.utc)
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def check_limits(self, user_id, file_size):
+        """Проверяет лимиты и сбрасывает их в 00:00 UTC."""
+        now = datetime.now(timezone.utc)
+
+        # Если наступил новый день (00:00 UTC), сбрасываем счетчики у всех
+        if now > self.last_global_reset + timedelta(days=1):
+            self.user_data.clear()  # Обнуляем данные всех пользователей
+            self.last_global_reset = self._get_last_utc_midnight()
+
+        # Инициализируем данные пользователя, если их нет
+        if user_id not in self.user_data:
+            self.user_data[user_id] = {'files_today': 0}
+
+        # Проверяем лимиты
+        if file_size > 15 * 1024 * 1024:  # 15 MB
+            return False, "❌ Размер файла превышает 15 MB."
+
+        if self.user_data[user_id]['files_today'] >= 50:
+            time_left = (self.last_global_reset + timedelta(days=1)) - now
+            hours_left = time_left.seconds // 3600
+            minutes_left = (time_left.seconds % 3600) // 60
+            return False, f"❌ Лимит исчерпан (50/50). Сброс через {hours_left} ч. {minutes_left} мин. (в 00:00 UTC)."
+
+        return True, ""
+
+    def increment_counter(self, user_id):
+        """Увеличивает счетчик файлов пользователя."""
+        if user_id not in self.user_data:
+            self.user_data[user_id] = {'files_today': 1}
+        else:
+            self.user_data[user_id]['files_today'] += 1
+
+# Создаем экземпляр класса лимитов
+user_limits = UserLimits()
 
 # Система очереди
 class TaskQueue:
@@ -471,11 +517,7 @@ async def process_filename(message: Message, state: FSMContext):
     if message.text == "Пропустить":
         output_file_name = "merged.docx"
     else:
-        # Проверяем, что имя файла заканчивается на .docx
-        if not message.text.lower().endswith('.docx'):
-            output_file_name = message.text + ".docx"
-        else:
-            output_file_name = message.text
+        output_file_name = message.text
 
     # Добавляем задачу в очередь с отсортированным списком файлов
     task_id, queue_position = task_queue.add_task(user_id, sorted_files, output_file_name)
@@ -575,6 +617,15 @@ async def handle_document(message: Message, state: FSMContext):
         return
 
     try:
+        # Проверяем размер файла
+        file_size = message.document.file_size
+
+        # Проверяем лимиты пользователя
+        is_allowed, error_msg = user_limits.check_limits(message.from_user.id, file_size)
+        if not is_allowed:
+            await message.answer(error_msg)
+            return
+
         file_info = await bot.get_file(message.document.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
         file_name = message.document.file_name
@@ -595,14 +646,22 @@ async def handle_document(message: Message, state: FSMContext):
         async with aiofiles.open(file_name, 'wb') as new_file:
             await new_file.write(downloaded_file.read())
 
+        # Увеличиваем счетчик файлов пользователя
+        user_limits.increment_counter(message.from_user.id)
+
         # Добавляем файл в список вместе с ID сообщения
         user_data = await state.get_data()
         file_list = user_data.get('file_list', [])
         # Теперь храним кортеж (имя_файла, id_сообщения)
         file_list.append((file_name, message.message_id))
         await state.update_data(file_list=file_list)
+        # Сообщаем о лимитах
+        files_left = 50 - user_limits.user_data[message.from_user.id]['files_today']
+        await message.answer(
+            f"Файл {message.document.file_name} сохранён! Всего файлов: {len(file_list)}\n"
+            f"Осталось файлов на сегодня: {files_left}/50"
+        )
 
-        await message.answer(f"Файл {message.document.file_name} сохранён! Всего файлов: {len(file_list)}")
     except Exception as e:
         await message.answer(f"Ошибка при сохранении файла: {str(e)}")
 
@@ -620,15 +679,42 @@ async def send_info(message: Message):
     keyboard.adjust(2)
 
     await message.answer(
-        "Данный бот объединяет файлы в формате docx. Если формат файла не docx, то файл конвертируется в этот формат и объединяется. "
-        "Для конвертации поддерживаются форматы fb2, epub, txt. В процессе конвертации сохраняется лишь текст, жирный и курсивный формат, оглавление, всё остальное теряется.\n\n"
+        "📚 Бот для объединения файлов (DOCX, FB2, EPUB, TXT).\n\n"
+        "Лимиты:\n"
+        "• 50 файлов в сутки (сброс в 00:00 UTC)\n"
+        "• Макс. размер файла: 15 MB\n\n"
         "Команды:\n"
-        "/start_merge - Начать сбор файлов\n"
-        "/end_merge - Завершить сбор и добавить задачу в очередь\n"
-        "/cancel - Отменить текущий сбор файлов\n"
-        "/cancel_task - Отменить задачу в очереди\n"
-        "/queue_status - Проверить статус вашей задачи в очереди",
+        "/start_merge – начать сбор файлов\n"
+        "/end_merge – завершить и объединить\n"
+        "/limits – проверить лимиты\n"
+        "/queue_status – статус очереди\n"
+        "/cancel – отменить текущий сбор",
         reply_markup=keyboard.as_markup(resize_keyboard=True)
+    )
+
+@router.message(Command("limits"))
+async def check_limits(message: Message):
+    """Показывает текущие лимиты и время до сброса."""
+    user_id = message.from_user.id
+    now = datetime.now(timezone.utc)
+    next_reset = user_limits.last_global_reset + timedelta(days=1)
+    time_left = next_reset - now
+
+    hours_left = time_left.seconds // 3600
+    minutes_left = (time_left.seconds % 3600) // 60
+
+    if user_id not in user_limits.user_data:
+        files_used = 0
+    else:
+        files_used = user_limits.user_data[user_id]['files_today']
+    files_left = 50 - files_used
+
+    await message.answer(
+        f"📊 Ваши лимиты:\n"
+        f"• Использовано файлов: {files_used}/50\n"
+        f"• Осталось файлов: {files_left}\n"
+        f"• Максимальный размер файла: 15 MB\n"
+        f"Лимит сбросится в 00:00 UTC (через {hours_left} ч. {minutes_left} мин.)"
     )
 
 # ===================== Запуск бота =====================
