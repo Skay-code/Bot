@@ -38,11 +38,18 @@ class UserLimits:
     def __init__(self):
         self.user_data = {}  # {user_id: {'files_today': int}}
         self.last_global_reset = self._get_last_utc_midnight()
+        self.user_locks = {} # Словарь для хранения блокировок пользователей
 
     def _get_last_utc_midnight(self):
         """Возвращает последнюю полночь по UTC."""
         now = datetime.now(timezone.utc)
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def get_lock(self, user_id):
+        """Получает или создает блокировку для пользователя."""
+        if user_id not in self.user_locks:
+            self.user_locks[user_id] = asyncio.Lock()
+        return self.user_locks[user_id]
 
     def check_limits(self, user_id, file_size):
         """Проверяет лимиты и сбрасывает их в 00:00 UTC."""
@@ -61,11 +68,11 @@ class UserLimits:
         if file_size > 15 * 1024 * 1024:  # 15 MB
             return False, "❌ Размер файла превышает 15 MB."
 
-        if self.user_data[user_id]['files_today'] >= 50:
+        if self.user_data[user_id]['files_today'] >= 10:
             time_left = (self.last_global_reset + timedelta(days=1)) - now
             hours_left = time_left.seconds // 3600
             minutes_left = (time_left.seconds % 3600) // 60
-            return False, f"❌ Лимит исчерпан (50/50). Сброс через {hours_left} ч. {minutes_left} мин. (в 00:00 UTC)."
+            return False, f"❌ Лимит исчерпан (10/10). Сброс через {hours_left} ч. {minutes_left} мин. (в 00:00 UTC)."
 
         return True, ""
 
@@ -616,16 +623,25 @@ async def handle_document(message: Message, state: FSMContext):
         await message.answer("Сбор файлов не запущен. Введите /start_merge для начала.")
         return
 
-    try:
-        # Проверяем размер файла
-        file_size = message.document.file_size
+    user_id = message.from_user.id
+    file_size = message.document.file_size
+    lock = user_limits.get_lock(user_id) # Получаем блокировку пользователя
 
-        # Проверяем лимиты пользователя
-        is_allowed, error_msg = user_limits.check_limits(message.from_user.id, file_size)
+    async with lock: # Захватываем блокировку (освободится автоматически при выходе из блока)
+        # --- Начало критической секции ---
+        is_allowed, error_msg = user_limits.check_limits(user_id, file_size)
         if not is_allowed:
             await message.answer(error_msg)
-            return
+            return # Выходим, блокировка освобождается
 
+        # Если лимит позволяет, СРАЗУ увеличиваем счетчик ВНУТРИ блокировки
+        user_limits.increment_counter(user_id)
+        files_today_count = user_limits.user_data[user_id]['files_today']
+        files_left = 10 - files_today_count
+        # --- Конец критической секции ---
+
+    # --- Операции вне блокировки (загрузка, сохранение) ---
+    try:
         file_info = await bot.get_file(message.document.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
         file_name = message.document.file_name
@@ -646,22 +662,17 @@ async def handle_document(message: Message, state: FSMContext):
         async with aiofiles.open(file_name, 'wb') as new_file:
             await new_file.write(downloaded_file.read())
 
-        # Увеличиваем счетчик файлов пользователя
-        user_limits.increment_counter(message.from_user.id)
-
         # Добавляем файл в список вместе с ID сообщения
         user_data = await state.get_data()
         file_list = user_data.get('file_list', [])
-        # Теперь храним кортеж (имя_файла, id_сообщения)
-        file_list.append((file_name, message.message_id))
-        await state.update_data(file_list=file_list)
-        # Сообщаем о лимитах
-        files_left = 50 - user_limits.user_data[message.from_user.id]['files_today']
-        await message.answer(
-            f"Файл {message.document.file_name} сохранён! Всего файлов: {len(file_list)}\n"
-            f"Осталось файлов на сегодня: {files_left}/50"
-        )
+        file_list.append(file_name)
+        await state.update_data(file_list=file_list)
 
+        # Сообщаем о лимитах
+        await message.answer(
+            f"Файл {file_name} сохранён! Всего файлов: {len(file_list)}\n"
+            f"Использовано сегодня: {files_today_count}/10" # Показываем актуальное число
+        )
     except Exception as e:
         await message.answer(f"Ошибка при сохранении файла: {str(e)}")
 
@@ -681,7 +692,7 @@ async def send_info(message: Message):
     await message.answer(
         "📚 Бот для объединения файлов (DOCX, FB2, EPUB, TXT).\n\n"
         "Лимиты:\n"
-        "• 50 файлов в сутки (сброс в 00:00 UTC)\n"
+        "• 10 файлов в сутки (сброс в 00:00 UTC)\n"
         "• Макс. размер файла: 15 MB\n\n"
         "Команды:\n"
         "/start_merge – начать сбор файлов\n"
@@ -707,11 +718,11 @@ async def check_limits(message: Message):
         files_used = 0
     else:
         files_used = user_limits.user_data[user_id]['files_today']
-    files_left = 50 - files_used
+    files_left = 10 - files_used
 
     await message.answer(
         f"📊 Ваши лимиты:\n"
-        f"• Использовано файлов: {files_used}/50\n"
+        f"• Использовано файлов: {files_used}/10\n"
         f"• Осталось файлов: {files_left}\n"
         f"• Максимальный размер файла: 15 MB\n"
         f"Лимит сбросится в 00:00 UTC (через {hours_left} ч. {minutes_left} мин.)"
