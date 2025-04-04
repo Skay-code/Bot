@@ -514,14 +514,20 @@ async def process_filename(message: Message, state: FSMContext):
     user_data = await state.get_data()
     file_list = user_data.get('file_list', [])
 
+    # Сортируем файлы по ID сообщения (второй элемент кортежа)
+    file_list.sort(key=lambda x: x[1])
+
+    # Извлекаем только имена файлов после сортировки
+    sorted_files = [file[0] for file in file_list]
+
     # Определяем имя выходного файла
     if message.text == "Пропустить":
         output_file_name = "merged.docx"
     else:
-        output_file_name = message.text
+        output_file_name = message.text + ".docx"
 
     # Добавляем задачу в очередь с отсортированным списком файлов
-    task_id, queue_position = task_queue.add_task(user_id, file_list, output_file_name)
+    task_id, queue_position = task_queue.add_task(user_id, sorted_files, output_file_name)
 
     # Возвращаем обычную клавиатуру
     keyboard = ReplyKeyboardBuilder()
@@ -659,8 +665,9 @@ async def handle_document(message: Message, state: FSMContext):
         # Добавляем файл в список вместе с ID сообщения
         user_data = await state.get_data()
         file_list = user_data.get('file_list', [])
-        file_list.append(file_name)
-        await state.update_data(file_list=file_list)
+        # Теперь храним кортеж (имя_файла, id_сообщения)
+        file_list.append((file_name, message.message_id))
+        await state.update_data(file_list=file_list)
 
         # Сообщаем о лимитах
         await message.answer(
