@@ -34,7 +34,7 @@ async def queue_status(message: Message):
         if len(task['file_list']) > 1:
             task_name += f" и еще {len(task['file_list'])-1} файлов"
 
-        tasks_info.append(f"Задача #{task_id}: {task_name} - {status}. Чтобы отменить задачу нажмите на /cancel_task_{task_id}.")
+        tasks_info.append(f"Задача #{task_id}: {task_name} - {status}")
     await message.answer("Ваши задачи:\n\n" + "\n".join(tasks_info))
 @router.message(Command("cancel_task"))
 async def cancel_specific_task(message: Message):
@@ -44,9 +44,9 @@ async def cancel_specific_task(message: Message):
     if await check_sender(message):
         return
 
-    args = message.text.split("_")
+    args = message.text.split()
     print(args)
-    if len(args) < 3:
+    if len(args) < 2:
         await message.answer("Пожалуйста, укажите ID задачи: /cancel_task_id <task_id>")
         return
 
