@@ -55,14 +55,14 @@ async def delete_message_after_delay(message: types.Message, delay: int):
     except Exception as e:
         print(f"Не удалось удалить сообщение {message.message_id}: {e}")
 
-# --- Вспомогательная функция для отправки и последующего удаления ---
-async def send_then_delete(chat_id: int, text: str, delay: int = 5, **kwargs):
-    """Отправляет сообщение и планирует его удаление."""
-    try:
-        sent_message = await bot.send_message(chat_id, text, **kwargs)
-        asyncio.create_task(delete_message_after_delay(sent_message, delay))
-    except Exception as e:
-        print(f"Ошибка при отправке или планировании удаления: {e}")
+async def del_msg(chat_id, list_delete_message):
+    # Удаляем сохранённые сообщения
+    for msg_id in list_delete_message:
+        try:
+           await bot.delete_message(chat_id, msg_id)
+           await asyncio.sleep(0.1)
+        except TelegramBadRequest: pass
+        except Exception as e: print(f"Ошибка удаления сообщения {msg_id} при end_merge: {e}")
 
 class UserLimits:
     def __init__(self, max_files, max_size):
@@ -135,11 +135,12 @@ class TaskQueue:
             'file_list': file_list,
             'output_file_name': output_file_name,
             'task_id': task_id,
-            'time_added': time.time()
+            'time_added': time.time(),
+            'list_delete_message': []
         }
         self.queue.append(task)
 
-        return len(self.queue)
+        return task, len(self.queue)
 
     def get_next_task(self):
         """Получить следующую задачу из очереди"""
@@ -191,7 +192,7 @@ def timer(func):
     return wrapper
 
 # Замените токен на свой
-API_TOKEN = ''
+API_TOKEN = '8166003091:AAGpwWqsWyCH2LdjJxSifia-94kmc5n-jX0'
 
 bot = Bot(token=API_TOKEN)
 router = Router()
@@ -460,14 +461,8 @@ async def cancel_collecting(message: Message, state: FSMContext):
     file_list = user_data.get('file_list', [])
     list_delete_message = user_data.get('list_delete_message', [])
     chat_id = message.chat.id
-
     # Удаляем сохранённые сообщения
-    for msg_id in list_delete_message:
-        try:
-           await bot.delete_message(chat_id, msg_id)
-           await asyncio.sleep(0.1)
-        except TelegramBadRequest: pass
-        except Exception as e: print(f"Ошибка удаления сообщения {msg_id} при end_merge: {e}")
+    await del_msg(chat_id, list_delete_message)
 
     # Удаляем временные файлы
     for file_item in file_list:
@@ -534,12 +529,16 @@ async def end_merge(message: Message, state: FSMContext):
 
     user_data = await state.get_data()
     file_list = user_data.get('file_list', [])
+    list_delete_message = user_data.get('list_delete_message', [])
+    chat_id = message.chat.id
 
     if not file_list:
         bot_message = await message.answer("Нет файлов для обработки!")
         await state.clear()  # Очищаем состояние
         asyncio.create_task(delete_message_after_delay(bot_message, delay=5))
         await message.delete()
+        # Удаляем сохранённые сообщения
+        await del_msg(chat_id, list_delete_message)
         return
 
     # Переходим к состоянию запроса имени файла
@@ -585,7 +584,7 @@ async def process_filename(message: Message, state: FSMContext):
         output_file_name = message.text + ".docx"
 
     # Добавляем задачу в очередь с отсортированным списком файлов
-    queue_position = task_queue.add_task(user_id, chat_id, message_thread_id, is_forum, sorted_files, output_file_name)
+    task, queue_position = task_queue.add_task(user_id, chat_id, message_thread_id, is_forum, sorted_files, output_file_name)
     await message.delete()
 
     # Возвращаем обычную клавиатуру
@@ -604,14 +603,15 @@ async def process_filename(message: Message, state: FSMContext):
             reply_markup=keyboard.as_markup(resize_keyboard=True)
         )
         list_delete_message.append(bot_message.message_id)
+        task['list_delete_message'] = list_delete_message
 
     # Очищаем состояние после добавления задачи в очередь
     await state.clear()
 
     # Пытаемся запустить обработку задачи, если есть свободные потоки
-    asyncio.create_task(check_and_process_queue(list_delete_message))
+    asyncio.create_task(check_and_process_queue())
 
-async def check_and_process_queue(list_delete_message):
+async def check_and_process_queue():
     """
     Проверяет очередь и запускает обработку новых задач, если есть свободные ресурсы.
     """
@@ -624,6 +624,7 @@ async def check_and_process_queue(list_delete_message):
             file_list = task['file_list']
             output_file_name = task['output_file_name']
             task_id = task['task_id']
+            list_delete_message = task['list_delete_message']
 
             send_kwargs = {} # Словарь для тем
             if is_forum == True: # Проверяем, существуют ли темы в группе
@@ -650,22 +651,18 @@ async def process_and_merge_files_with_queue(chat_id, send_kwargs, file_list, li
 
         # Отправляем объединённый файл пользователю
         document = FSInputFile(merged_file)
-        await bot.send_document(chat_id, document=document, caption=f"Результат задачи #{task_id}", **send_kwargs)
+        caption = os.path.splitext(output_file_name)[0]
+        await bot.send_document(chat_id, document=document, caption=caption, **send_kwargs)
 
     except Exception as e:
         await bot.send_message(chat_id, f"Произошла ошибка при обработке задачи #{task_id}: {str(e)}", **send_kwargs)
+
     finally:
         # Удаляем сохранённые сообщения
-        for msg_id in list_delete_message:
-            try:
-                await bot.delete_message(chat_id, msg_id)
-                await asyncio.sleep(0.1)
-            except TelegramBadRequest: pass
-            except Exception as e: print(f"Ошибка удаления сообщения {msg_id} при end_merge: {e}")
+        await del_msg(chat_id, list_delete_message)
 
         # Удаляем файлы, отправленные пользователем
         for file in file_list:
-            print(file_list)
             if os.path.exists(file):
                 os.remove(file)
 
