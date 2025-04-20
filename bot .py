@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -15,7 +16,7 @@ from bs4 import BeautifulSoup
 import ebooklib
 from ebooklib import epub
 from aiogram import Bot, Router, types, F, Dispatcher
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message, FSInputFile, BotCommand, BotCommandScopeDefault, BotCommandScopeAllGroupChats
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.utils import markdown as md
@@ -35,6 +36,20 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQu
 
 # Создаем пул потоков для выполнения CPU-bound задач
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="start_merge", description="Начать сбор файлов"),
+        BotCommand(command="end_merge", description="Завершить сбор и объединить"),
+        BotCommand(command="cancel", description="Отменить сбор"),
+        BotCommand(command="queue_status", description="Статус очереди задач"),
+        BotCommand(command="limits", description="Проверить лимиты"),
+        BotCommand(command="info", description="Информация о боте и команды"),
+    ]
+    # Команды для личных чатов
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    # Команды для всех групповых чатов
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
 
 async def check_sender(message: types.Message):
     """Проверяет отправителя. Если не пользователь, отвечает и возвращает True."""
@@ -587,21 +602,12 @@ async def process_filename(message: Message, state: FSMContext):
     task, queue_position = task_queue.add_task(user_id, chat_id, message_thread_id, is_forum, sorted_files, output_file_name)
     await message.delete()
 
-    # Возвращаем обычную клавиатуру
-    keyboard = ReplyKeyboardBuilder()
-    keyboard.add(types.KeyboardButton(text="/start_merge"))
-    keyboard.add(types.KeyboardButton(text="/end_merge"))
-    keyboard.add(types.KeyboardButton(text="/cancel"))
-    keyboard.add(types.KeyboardButton(text="/queue_status"))
-    keyboard.adjust(2)
-
     if queue_position > 0:
         bot_message = await message.answer(
             f"Итоговый файл будет назван: {output_file_name}\n"
             f"Ваша задача добавлена в очередь на позицию {queue_position}."
-            f"Используйте /queue_status для проверки статуса.",
-            reply_markup=keyboard.as_markup(resize_keyboard=True)
-        )
+            f"Используйте /queue_status для проверки статуса."
+            )
         list_delete_message.append(bot_message.message_id)
         task['list_delete_message'] = list_delete_message
 
@@ -763,17 +769,10 @@ async def send_info(message: Message):
     if await check_sender(message):
         return
 
-    keyboard = ReplyKeyboardBuilder()
-    keyboard.add(types.KeyboardButton(text="/start_merge"))
-    keyboard.add(types.KeyboardButton(text="/end_merge"))
-    keyboard.add(types.KeyboardButton(text="/cancel"))
-    keyboard.add(types.KeyboardButton(text="/queue_status"))
-    keyboard.adjust(2)
-
     max_files = user_limits.max_files
     max_size = user_limits.max_size
 
-    await message.answer(
+    bot_message = await message.answer(
         "📚 Бот для объединения файлов (DOCX, FB2, EPUB, TXT).\n\n"
         "Лимиты:\n"
         f"• {max_files} файлов в сутки (сброс в 00:00 UTC)\n"
@@ -783,9 +782,9 @@ async def send_info(message: Message):
         "/end_merge – завершить и объединить\n"
         "/limits – проверить лимиты\n"
         "/queue_status – статус очереди\n"
-        "/cancel – отменить текущий сбор",
-        reply_markup=keyboard.as_markup(resize_keyboard=True)
+        "/cancel – отменить текущий сбор"
     )
+    asyncio.create_task(delete_message_after_delay(bot_message, delay=300))
     await message.delete()
 
 @router.message(Command("limits"))
@@ -824,6 +823,7 @@ async def main():
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
+    await set_bot_commands(bot)
     print("Бот запущен.")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
