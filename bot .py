@@ -1,9 +1,9 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+# Установка pandoc и pypandoc
+!apt update && apt install -y pandoc
 # Установка зависимостей
-!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
+!pip install pypandoc python-docx docxcompose aiogram aiofiles nest_asyncio
 
 import os
 import re
@@ -12,9 +12,6 @@ import docx
 import aiogram
 from docx import Document
 from docxcompose.composer import Composer
-from bs4 import BeautifulSoup
-import ebooklib
-from ebooklib import epub
 from aiogram import Bot, Router, types, F, Dispatcher
 from aiogram.types import Message, FSInputFile, BotCommand, BotCommandScopeDefault, BotCommandScopeAllGroupChats
 from aiogram.filters import Command
@@ -33,6 +30,7 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 nest_asyncio.apply()
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+import pypandoc
 
 # Создаем пул потоков для выполнения CPU-bound задач
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -221,103 +219,18 @@ async def run_in_threadpool(func, *args, **kwargs):
     return await loop.run_in_executor(thread_pool, func_partial)
 
 # Неблокирующие версии функций конвертации
-async def convert_epub_to_docx(epub_file, docx_file):
+async def convert_and_merge_with_pandoc(file_list, output_file_name):
     def _convert():
-        # Открываем EPUB-файл
-        book = epub.read_epub(epub_file)
-        document = Document()
-        # Перебираем элементы книги
-        for item in book.get_items():
-            if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                soup = BeautifulSoup(item.content, 'html.parser')
-                for element in soup.find_all():
-                    if element.name == 'h1':
-                        document.add_heading(element.get_text(), level=0)
-                    elif element.name == 'p':
-                        doc_paragraph = document.add_paragraph()
-                        # Перебор вложенных элементов абзаца
-                        for sub in element.contents:
-                            if hasattr(sub, 'name'):
-                                if sub.name == 'strong':
-                                    run = doc_paragraph.add_run(sub.get_text())
-                                    run.bold = True
-                                elif sub.name == 'em':
-                                    run = doc_paragraph.add_run(sub.get_text())
-                                    run.italic = True
-                                else:
-                                    doc_paragraph.add_run(sub.get_text())
-                            else:
-                                # Если это просто текст
-                                doc_paragraph.add_run(sub)
-        document.save(docx_file)
-
+        # Pandoc может напрямую объединить файлы с помощью input list
+        output_path = output_file_name
+        pypandoc.convert_file(
+            source=file_list,
+            to='docx',
+            outputfile=output_path,
+            extra_args=['--standalone']
+        )
+        return output_path
     return await run_in_threadpool(_convert)
-
-async def convert_fb2_to_docx(fb2_file, docx_file):
-    def _convert():
-        with open(fb2_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-        soup = BeautifulSoup(content, 'xml')
-        document = Document()
-        for element in soup.find_all():
-            if element.name == 'title':
-                document.add_heading(element.get_text(), level=0)
-            elif element.name == 'p':
-                # Если абзац не является частью title или annotation
-                if element.find_parent(['title', 'annotation']) is None:
-                    doc_paragraph = document.add_paragraph()
-                    for sub in element.contents:
-                        if hasattr(sub, 'name'):
-                            if sub.name == 'strong':
-                                run = doc_paragraph.add_run(sub.get_text())
-                                run.bold = True
-                            elif sub.name == 'emphasis':
-                                run = doc_paragraph.add_run(sub.get_text())
-                                run.italic = True
-                            else:
-                                doc_paragraph.add_run(sub.get_text())
-                        else:
-                            doc_paragraph.add_run(sub)
-        document.save(docx_file)
-
-    return await run_in_threadpool(_convert)
-
-async def convert_txt_to_docx(txt_file, docx_file):
-    def _convert():
-        with open(txt_file, 'r', encoding='utf-8') as f:
-            text = f.read()
-        document = Document()
-        for line in text.splitlines():
-            document.add_paragraph(line)
-        document.save(docx_file)
-
-    return await run_in_threadpool(_convert)
-
-@timer
-async def process_files(file_list):
-    """
-    Обрабатывает список файлов, конвертируя их в формат .docx (если требуется)
-    и возвращает список имен файлов в формате .docx для последующего объединения.
-    """
-    converted_files = []
-    for file in file_list:
-        ext = os.path.splitext(file)[1].lower()
-        # Если файл уже в формате .docx – добавляем его в список
-        if ext == ".docx":
-            converted_files.append(file)
-        elif ext == ".txt":
-            docx_file = os.path.splitext(file)[0] + ".docx"
-            await convert_txt_to_docx(file, docx_file)
-            converted_files.append(docx_file)
-        elif ext == ".fb2":
-            docx_file = os.path.splitext(file)[0] + ".docx"
-            await convert_fb2_to_docx(file, docx_file)
-            converted_files.append(docx_file)
-        elif ext == ".epub":
-            docx_file = os.path.splitext(file)[0] + ".docx"
-            await convert_epub_to_docx(file, docx_file)
-            converted_files.append(docx_file)
-    return converted_files
 
 # ===================== Неблокирующие функции для работы с документами =====
 def check_and_add_title(doc, file_name):
@@ -648,9 +561,7 @@ async def process_and_merge_files_with_queue(chat_id, send_kwargs, file_list, li
     """
     try:
         # Конвертация и объединение файлов
-        converted_files = await process_files(file_list)
-        merged_file = await merge_docx(converted_files, output_file_name)
-
+        merged_file = await convert_and_merge_with_pandoc(file_list, output_file_name)
         # Формируем сообщение с информацией о собранных файлах
         file_list_str = "\n".join([os.path.basename(f) for f in file_list])
         await bot.send_message(chat_id, f"Задача #{task_id} завершена!\nФайлы объединены в {os.path.basename(output_file_name)}.\nСобрано {len(file_list)} файлов:\n{file_list_str}", **send_kwargs)
