@@ -3,8 +3,6 @@
 # -*- coding: utf-8 -*-
 
 # Установка зависимостей
-!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
-
 import os
 import re
 import time
