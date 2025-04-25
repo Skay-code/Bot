@@ -1,9 +1,9 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Установка pandoc и pypandoc
-!apt update && apt install -y pandoc
+
 # Установка зависимостей
-!pip install pypandoc python-docx docxcompose aiogram aiofiles nest_asyncio
+!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
 
 import os
 import re
@@ -12,6 +12,9 @@ import docx
 import aiogram
 from docx import Document
 from docxcompose.composer import Composer
+from bs4 import BeautifulSoup
+import ebooklib
+from ebooklib import epub
 from aiogram import Bot, Router, types, F, Dispatcher
 from aiogram.types import Message, FSInputFile, BotCommand, BotCommandScopeDefault, BotCommandScopeAllGroupChats
 from aiogram.filters import Command
@@ -29,8 +32,7 @@ from functools import partial
 from collections import deque
 from datetime import datetime, timezone, timedelta
 nest_asyncio.apply()
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-import pypandoc
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardRemove
 
 # Создаем пул потоков для выполнения CPU-bound задач
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -48,6 +50,19 @@ async def set_bot_commands(bot: Bot):
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
     # Команды для всех групповых чатов
     await bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
+
+async def sanitize_filename(file_name):
+    replacement = '_'
+    invalid_chars_pattern = r'[<>:"/|\?*]' # Паттерн для поиска недопустимых символов
+
+    # Заменяем все недопустимые символы на specified replacement
+    sanitized = re.sub(invalid_chars_pattern, replacement, file_name)
+
+    # Опционально: ограничить длину имени файла, т.к. у ФС есть лимиты (обычно 255 байт)
+    max_len = 250
+    sanitized = sanitized[:max_len]
+
+    return sanitized
 
 async def check_sender(message: types.Message):
     """Проверяет отправителя. Если не пользователь, отвечает и возвращает True."""
@@ -124,6 +139,9 @@ class UserLimits:
     def increment_counter(self, user_id):
         """Увеличивает счетчик файлов пользователя."""
         self.user_data[user_id]['files_today'] += 1
+
+    def discrement_counter(self, user_id, count):
+        self.user_data[user_id]['files_today'] -= count
 
 # Создаем экземпляр класса лимитов
 user_limits = UserLimits(max_files=30, max_size=15)
@@ -219,18 +237,127 @@ async def run_in_threadpool(func, *args, **kwargs):
     return await loop.run_in_executor(thread_pool, func_partial)
 
 # Неблокирующие версии функций конвертации
-async def convert_and_merge_with_pandoc(file_list, output_file_name):
+async def convert_epub_to_docx(epub_file, docx_file):
     def _convert():
-        # Pandoc может напрямую объединить файлы с помощью input list
-        output_path = output_file_name
-        pypandoc.convert_file(
-            source=file_list,
-            to='docx',
-            outputfile=output_path,
-            extra_args=['--standalone']
-        )
-        return output_path
+        try:
+            # Открываем EPUB-файл
+            book = epub.read_epub(epub_file)
+            document = Document()
+            spine_ids = [item[0] for item in book.spine]  # [ 'titlepage', 'Section0001.html', ... ]
+            ordered_items = []
+            # Перебираем элементы книги
+            for id_ in spine_ids:
+                item = book.get_item_with_id(id_)
+                if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    soup = BeautifulSoup(item.content, 'html.parser')
+                    for element in soup.find_all():
+                        if element.name == 'h1':
+                            document.add_heading(element.get_text(), level=0)
+                        elif element.name == 'p':
+                            doc_paragraph = document.add_paragraph()
+                            # Перебор вложенных элементов абзаца
+                            for sub in element.contents:
+                                if hasattr(sub, 'name'):
+                                    if sub.name == 'strong':
+                                        run = doc_paragraph.add_run(sub.get_text())
+                                        run.bold = True
+                                    elif sub.name == 'em':
+                                        run = doc_paragraph.add_run(sub.get_text())
+                                        run.italic = True
+                                    else:
+                                        doc_paragraph.add_run(sub.get_text())
+                                else:
+                                    # Если это просто текст
+                                    doc_paragraph.add_run(sub)
+        except Exception as e:
+            print(f"Ошибка конвертации EPUB {epub_file}: {e}")
+            # Создаем пустой docx или с сообщением об ошибке, чтобы процесс не падал
+            document = Document()
+            document.add_paragraph(f"Ошибка конвертации файла {os.path.basename(epub_file)}: {e}")
+        finally:
+            document.save(docx_file)
+
     return await run_in_threadpool(_convert)
+
+async def convert_fb2_to_docx(fb2_file, docx_file):
+    def _convert():
+        try:
+            with open(fb2_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            soup = BeautifulSoup(content, 'xml')
+            document = Document()
+            for element in soup.find_all():
+                if element.name == 'title':
+                    document.add_heading(element.get_text(), level=0)
+                elif element.name == 'p':
+                    # Если абзац не является частью title или annotation
+                    if element.find_parent(['title', 'annotation']) is None:
+                        doc_paragraph = document.add_paragraph()
+                        for sub in element.contents:
+                            if hasattr(sub, 'name'):
+                                if sub.name == 'strong':
+                                    run = doc_paragraph.add_run(sub.get_text())
+                                    run.bold = True
+                                elif sub.name == 'emphasis':
+                                    run = doc_paragraph.add_run(sub.get_text())
+                                    run.italic = True
+                                else:
+                                    doc_paragraph.add_run(sub.get_text())
+                            else:
+                                doc_paragraph.add_run(sub)
+        except Exception as e:
+            print(f"Ошибка конвертации FB2 {fb2_file}: {e}")
+            # Создаем пустой docx или с сообщением об ошибке, чтобы процесс не падал
+            document = Document()
+            document.add_paragraph(f"Ошибка конвертации файла {os.path.basename(fb2_file)}: {e}")
+        finally:
+            document.save(docx_file)
+
+    return await run_in_threadpool(_convert)
+
+async def convert_txt_to_docx(txt_file, docx_file):
+    def _convert():
+        try:
+            with open(txt_file, 'r', encoding='utf-8') as f:
+                text = f.read()
+            document = Document()
+            for line in text.splitlines():
+                document.add_paragraph(line)
+        except Exception as e:
+            print(f"Ошибка конвертации TXT {txt_file}: {e}")
+            # Создаем пустой docx или с сообщением об ошибке, чтобы процесс не падал
+            document = Document()
+            document.add_paragraph(f"Ошибка конвертации файла {os.path.basename(txt_file)}: {e}")
+        finally:
+            document.save(docx_file)
+
+    return await run_in_threadpool(_convert)
+
+@timer
+async def process_files(file_list):
+    """
+    Обрабатывает список файлов, конвертируя их в формат .docx (если требуется)
+    и возвращает список имен файлов в формате .docx для последующего объединения.
+    """
+    converted_files = []
+    for file in file_list:
+        ext = os.path.splitext(file)[1].lower()
+        # Если файл уже в формате .docx – добавляем его в список
+        if ext == ".docx":
+            converted_files.append(file)
+        elif ext == ".txt":
+            docx_file = os.path.splitext(file)[0] + ".docx"
+            await convert_txt_to_docx(file, docx_file)
+            converted_files.append(docx_file)
+        elif ext == ".fb2":
+            docx_file = os.path.splitext(file)[0] + ".docx"
+            await convert_fb2_to_docx(file, docx_file)
+            converted_files.append(docx_file)
+        elif ext == ".epub":
+            docx_file = os.path.splitext(file)[0] + ".docx"
+            await convert_epub_to_docx(file, docx_file)
+            converted_files.append(docx_file)
+    return converted_files
 
 # ===================== Неблокирующие функции для работы с документами =====
 def check_and_add_title(doc, file_name):
@@ -251,36 +378,43 @@ def check_and_add_title(doc, file_name):
         check_paragraphs = doc.paragraphs[0:4]
         title_found = False
         for p in check_paragraphs:
-            for pattern in patterns:
-                if re.search(pattern, p.text):
-                    title_found = True
-                    break
-            if title_found:
+            if any(p.style.name.lower().startswith(prefix) for prefix in ["heading", "заголовок"]):
+                title_found = True
                 break
+
+        if not title_found:
+            for p in check_paragraphs:
+                for pattern in patterns:
+                    if re.search(pattern, p.text.strip()):
+                        title_found = True
+                        break
+                if title_found:
+                    break
         if not title_found:
             # Добавляем заголовок перед первым абзацем
             title = os.path.splitext(os.path.basename(file_name))[0]
-            title_run = doc.paragraphs[0].insert_paragraph_before().add_run(f"{title}\n")
-            # Форматирование заголовка
-            title_run.bold = True
+            paragraph = doc.paragraphs[0].insert_paragraph_before(title)
+            paragraph.style = 'Heading 1'
     return doc
 
 @timer
 async def merge_docx(file_list, output_file_name):
     def _merge():
-         # Создаем новый документ
-         merged_document = Document(file_list[0])
-         merged_document = check_and_add_title(merged_document, file_list[0])
-         composer = Composer(merged_document)
-         for file in file_list[1:]:
-             doc = Document(file)
-             # Проверяем и добавляем название главы при необходимости
-             doc = check_and_add_title(doc, file)
-             composer.append(doc)
-         # Сохраняем итоговый документ
-         composer.save(output_file_name)
-         print(f"Файлы объединены в {output_file_name}")
-         return output_file_name
+        # Создаем новый документ
+        merged_document = Document()
+        composer = Composer(merged_document)
+        try:
+            for file in file_list:
+                doc = Document(file)
+                doc = check_and_add_title(doc, file)
+                composer.append(doc)
+        except Exception as e:
+            print(f"Ошибка конвертации FB2 {fb2_file}: {e}")
+            merged_document.add_paragraph(f"Ошибка конвертации файла {os.path.basename(fb2_file)}: {e}")
+        finally:
+            composer.save(output_file_name)
+            print(f"Файлы объединены в {output_file_name}")
+            return output_file_name
 
     # Объединяем обработанные файлы в отдельном потоке
     result = await run_in_threadpool(_merge)
@@ -389,8 +523,13 @@ async def cancel_collecting(message: Message, state: FSMContext):
     file_list = user_data.get('file_list', [])
     list_delete_message = user_data.get('list_delete_message', [])
     chat_id = message.chat.id
+    user_id = message.from_user.id
+
     # Удаляем сохранённые сообщения
     await del_msg(chat_id, list_delete_message)
+    user_limits.discrement_counter(user_id, len(file_list))
+    max_files = user_limits.max_files
+    files_today_count = user_limits.user_data[user_id]['files_today']
 
     # Удаляем временные файлы
     for file_item in file_list:
@@ -399,7 +538,9 @@ async def cancel_collecting(message: Message, state: FSMContext):
             os.remove(file)
 
     await state.clear()
-    bot_message = await message.answer("Сбор файлов отменен. Все временные файлы удалены.")
+    bot_message = await message.answer("Сбор файлов отменен. Все временные файлы удалены.\n"
+                  f"Ваш лимит: {files_today_count}/{max_files} (-{len(file_list)})" # Показываем актуальное число
+                  )
     asyncio.create_task(delete_message_after_delay(bot_message, delay=5))
     await message.delete()
 
@@ -432,7 +573,15 @@ async def handle_cancel_callback(callback_query: CallbackQuery):
         task_queue.queue = new_queue
         text, keyboard = build_task_status(user_id)
         await message.edit_text(text, reply_markup=keyboard)
-        await message.answer(f"Задача #{task_id} удалена из очереди")
+
+        file_list = task['file_list']
+        user_limits.discrement_counter(user_id, len(file_list))
+        max_files = user_limits.max_files
+        files_today_count = user_limits.user_data[user_id]['files_today']
+        bot_message = await message.answer("Задача #{task_id} удалена из очереди\n"
+            f"Ваш лимит: {files_today_count}/{max_files} (-{len(file_list)})" # Показываем актуальное число
+        )
+        asyncio.create_task(delete_message_after_delay(bot_message, delay=5))
     else:
         # Проверяем, не выполняется ли задача в данный момент
         if task_id in task_queue.active_tasks and task_queue.active_tasks[task_id]['user_id'] == user_id:
@@ -510,6 +659,7 @@ async def process_filename(message: Message, state: FSMContext):
         output_file_name = "merged.docx"
     else:
         output_file_name = message.text + ".docx"
+        output_file_name = await sanitize_filename(output_file_name)
 
     # Добавляем задачу в очередь с отсортированным списком файлов
     task, queue_position = task_queue.add_task(user_id, chat_id, message_thread_id, is_forum, sorted_files, output_file_name)
@@ -518,8 +668,8 @@ async def process_filename(message: Message, state: FSMContext):
     if queue_position > 0:
         bot_message = await message.answer(
             f"Итоговый файл будет назван: {output_file_name}\n"
-            f"Ваша задача добавлена в очередь на позицию {queue_position}."
-            f"Используйте /queue_status для проверки статуса."
+            f"Ваша задача добавлена в очередь на позицию {queue_position}.\n"
+            f"Используйте /queue_status для проверки статуса.", reply_markup=ReplyKeyboardRemove()
             )
         list_delete_message.append(bot_message.message_id)
         task['list_delete_message'] = list_delete_message
@@ -561,7 +711,9 @@ async def process_and_merge_files_with_queue(chat_id, send_kwargs, file_list, li
     """
     try:
         # Конвертация и объединение файлов
-        merged_file = await convert_and_merge_with_pandoc(file_list, output_file_name)
+        converted_files = await process_files(file_list)
+        merged_file = await merge_docx(converted_files, output_file_name)
+
         # Формируем сообщение с информацией о собранных файлах
         file_list_str = "\n".join([os.path.basename(f) for f in file_list])
         await bot.send_message(chat_id, f"Задача #{task_id} завершена!\nФайлы объединены в {os.path.basename(output_file_name)}.\nСобрано {len(file_list)} файлов:\n{file_list_str}", **send_kwargs)
@@ -570,6 +722,10 @@ async def process_and_merge_files_with_queue(chat_id, send_kwargs, file_list, li
         document = FSInputFile(merged_file)
         caption = os.path.splitext(output_file_name)[0]
         await bot.send_document(chat_id, document=document, caption=caption, **send_kwargs)
+
+        # Удаляем объединенный файл после отправки
+        if os.path.exists(merged_file):
+            os.remove(merged_file)
 
     except Exception as e:
         await bot.send_message(chat_id, f"Произошла ошибка при обработке задачи #{task_id}: {str(e)}", **send_kwargs)
@@ -582,10 +738,6 @@ async def process_and_merge_files_with_queue(chat_id, send_kwargs, file_list, li
         for file in file_list:
             if os.path.exists(file):
                 os.remove(file)
-
-        # Удаляем объединенный файл после отправки
-        if os.path.exists(merged_file):
-            os.remove(merged_file)
 
         # Отмечаем задачу как выполненную
         task_queue.complete_task(task_id)  # Теперь передаю task_id (раньше было user_id)
@@ -610,6 +762,16 @@ async def handle_document(message: Message, state: FSMContext):
             asyncio.create_task(delete_message_after_delay(bot_message, delay=5))
         return
 
+    file_name = message.document.file_name
+    file_name = await sanitize_filename(file_name)
+    base_name, extension = os.path.splitext(file_name)
+    counter = 1
+
+    if extension.lower() not in (".docx", ".fb2", ".txt", ".epub"):
+        bot_message = await message.answer(f"Неизвестный формат файла: {message.document.file_name}. Пожалуйста, отправляйте файлы только в форматах docx, fb2, epub, txt.")
+        asyncio.create_task(delete_message_after_delay(bot_message, delay=10))
+        return
+
     user_id = message.from_user.id
     file_size = message.document.file_size
     lock = user_limits.get_lock(user_id) # Получаем блокировку пользователя
@@ -628,17 +790,7 @@ async def handle_document(message: Message, state: FSMContext):
 
     # --- Операции вне блокировки (загрузка, сохранение) ---
     try:
-        file_name = message.document.file_name
-
         # Добавляем цифры к имени файла, если нужно, чтобы избежать конфликта между файлами
-        base_name, extension = os.path.splitext(file_name)
-        counter = 1
-
-        if extension.lower() not in (".docx", ".fb2", ".txt", ".epub"):
-            bot_message = await message.answer(f"Неизвестный формат файла: {message.document.file_name}. Пожалуйста, отправляйте файлы только в форматах docx, fb2, epub, txt.")
-            asyncio.create_task(delete_message_after_delay(bot_message, delay=10))
-            return
-
         while os.path.exists(file_name):
             file_name = f"{base_name}({counter}){extension}"
             counter += 1
