@@ -6,7 +6,7 @@
 import os
 import re
 import time
-import docx
+#import docx
 import aiogram
 from docx import Document
 from docxcompose.composer import Composer
