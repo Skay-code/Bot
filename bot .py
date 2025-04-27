@@ -1,12 +1,13 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Установка зависимостей
+!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
+
 import os
 import re
 import time
-#import docx
+import docx
 import aiogram
 from docx import Document
 from docxcompose.composer import Composer
@@ -24,7 +25,7 @@ import nest_asyncio
 import concurrent.futures
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
-from aiogram.fsm.state import StatesGroup
+from aiogram.fsm.state iоmport StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from functools import partial
 from collections import deque
