@@ -35,6 +35,7 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 nest_asyncio.apply()
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardRemove
+from aiogram.exceptions import TelegramBadRequest
 
 # Создаем пул потоков для выполнения CPU-bound задач
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
