@@ -10,6 +10,9 @@ import time
 import docx
 import aiogram
 from docx import Document
+from docx.shared import Inches
+import io
+import posixpath
 from docxcompose.composer import Composer
 from bs4 import BeautifulSoup
 import ebooklib
@@ -25,7 +28,7 @@ import nest_asyncio
 import concurrent.futures
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
-from aiogram.fsm.state iоmport StatesGroup
+from aiogram.fsm.state import StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from functools import partial
 from collections import deque
@@ -249,6 +252,7 @@ async def convert_epub_to_docx(epub_file, docx_file):
                 item = book.get_item_with_id(id_)
                 if item.get_type() == ebooklib.ITEM_DOCUMENT:
                     soup = BeautifulSoup(item.content, 'html.parser')
+                    html_base_path = posixpath.dirname(item.get_name())
                     for element in soup.find_all():
                         if element.name == 'h1':
                             document.add_heading(element.get_text(), level=0)
@@ -268,6 +272,39 @@ async def convert_epub_to_docx(epub_file, docx_file):
                                 else:
                                     # Если это просто текст
                                     doc_paragraph.add_run(sub)
+                        # Обработка тегов изображений <img>
+                        elif element.name == 'img':
+                            src = element.get('src')
+                            if src:
+                                try:
+                                    # Формируем полный путь к изображению внутри EPUB
+                                    # Используем posixpath для корректного объединения путей
+                                    # normpath убирает вещи вроде '../'
+                                    image_href = posixpath.normpath(posixpath.join(html_base_path, src))
+
+                                    # Ищем элемент изображения в книге по его пути (href)
+                                    img_item = book.get_item_with_href(image_href)
+
+                                    if img_item and img_item.get_type() == ebooklib.ITEM_IMAGE:
+                                        # Получаем бинарные данные изображения
+                                        image_data = img_item.content
+                                        # Оборачиваем данные в BytesIO, чтобы python-docx мог их прочитать
+                                        image_stream = io.BytesIO(image_data)
+
+                                        # Добавляем изображение в документ
+                                        # Изображение добавляется как новый параграф.
+                                        # Можно задать ширину (или высоту), чтобы избежать слишком больших картинок
+                                        # Ширина в 6 дюймов обычно хорошо подходит для страницы A4.
+                                        document.add_picture(image_stream, width=Inches(5.5))
+
+                                    else:
+                                        print(f"Предупреждение: Не найден элемент изображения или тип не ITEM_IMAGE для href: {image_href} (src: {src})")
+
+                                except KeyError:
+                                    # Если get_item_with_href не нашел элемент
+                                     print(f"Предупреждение: Не найден элемент изображения в манифесте EPUB для href: {image_href} (src: {src}) в файле {item.get_name()}")
+                                except Exception as img_e:
+                                    print(f"Ошибка при обработке изображения {src} в файле {item.get_name()}: {img_e}")
         except Exception as e:
             print(f"Ошибка конвертации EPUB {epub_file}: {e}")
             # Создаем пустой docx или с сообщением об ошибке, чтобы процесс не падал
@@ -391,9 +428,15 @@ def check_and_add_title(doc, file_name):
                     break
         if not title_found:
             # Добавляем заголовок перед первым абзацем
+            style_names = ['Heading 1', 'Заголовок 1']
             title = os.path.splitext(os.path.basename(file_name))[0]
             paragraph = doc.paragraphs[0].insert_paragraph_before(title)
-            paragraph.style = 'Heading 1'
+            for name in style_names:
+                try:
+                    paragraph.style = name
+                    break
+                except Exception as e:
+                    print(f"Стиль {name} не получилось установить: {e}")
     return doc
 
 @timer
@@ -404,12 +447,16 @@ async def merge_docx(file_list, output_file_name):
         composer = Composer(merged_document)
         try:
             for file in file_list:
-                doc = Document(file)
-                doc = check_and_add_title(doc, file)
-                composer.append(doc)
+                try:
+                    doc = Document(file)
+                    doc = check_and_add_title(doc, file)
+                    composer.append(doc)
+                except Exception as e:
+                    print(f"Ошибка добавления файла {file}: {e}")
+                    merged_document.add_paragraph(f"Ошибка добавления файла {os.path.basename(file)}: {e}")
         except Exception as e:
-            print(f"Ошибка конвертации FB2 {fb2_file}: {e}")
-            merged_document.add_paragraph(f"Ошибка конвертации файла {os.path.basename(fb2_file)}: {e}")
+            print(f"Критическая ошибка, невозможно пройтись по списку {file_list}: {e}")
+            merged_document.add_paragraph(f"Критическая ошибка, невозможно пройтись по списку {file_list}: {e}")
         finally:
             composer.save(output_file_name)
             print(f"Файлы объединены в {output_file_name}")
