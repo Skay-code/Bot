@@ -576,8 +576,11 @@ async def cancel_collecting(message: Message, state: FSMContext):
     await del_msg(chat_id, list_delete_message)
     user_limits.discrement_counter(user_id, len(file_list))
     max_files = user_limits.max_files
-    files_today_count = user_limits.user_data[user_id]['files_today']
-
+    if user_id in user_limits.user_data:
+        files_today_count = user_limits.user_data[user_id]['files_today']
+    else:
+        files_today_count = 0
+        
     # Удаляем временные файлы
     for file_item in file_list:
         file = file_item[0]
