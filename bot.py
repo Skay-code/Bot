@@ -144,7 +144,8 @@ class UserLimits:
         self.user_data[user_id]['files_today'] += 1
 
     def discrement_counter(self, user_id, count):
-        self.user_data[user_id]['files_today'] -= count
+        if user_id in self.user_data:
+            self.user_data[user_id]['files_today'] -= count
 
 # Создаем экземпляр класса лимитов
 user_limits = UserLimits(max_files=30, max_size=15)
