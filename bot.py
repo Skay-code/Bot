@@ -131,15 +131,13 @@ class UserLimits:
         if file_size > self.max_size * 1024 * 1024:  # Допустимый размер файла
             return False, f"❌ Размер файла превышает {self.max_size} MB."
             
-        time_left = (self.last_global_reset + timedelta(days=1)) - now
-        hours_left = time_left.seconds // 3600
-        minutes_left = (time_left.seconds % 3600) // 60
-        files_today = self.user_data[user_id]['files_today']
-        if files_today == self.max_files:
+        if self.user_data[user_id]['files_today'] == self.max_files:
+            time_left = (self.last_global_reset + timedelta(days=1)) - now
+            hours_left = time_left.seconds // 3600
+            minutes_left = (time_left.seconds % 3600) // 60
             return False, f"❌ Лимит исчерпан ({self.max_files}/{self.max_files}). Сброс через {hours_left} ч. {minutes_left} мин. (в 00:00 UTC)."
 
-        return True, "", files_today, self.max_files, time_left, hours_left, minutes_left 
-
+        return True, ""
     def increment_counter(self, user_id):
         """Увеличивает счетчик файлов пользователя."""
         self.user_data[user_id]['files_today'] += 1
@@ -828,7 +826,7 @@ async def handle_document(message: Message, state: FSMContext):
     lock = user_limits.get_lock(user_id) # Получаем блокировку пользователя
 
     async with lock: # Захватываем блокировку (освободится автоматически при выходе из блока)
-        is_allowed, error_msg, files_today_count, max_files, time_left, hours_left, minutes_left  = user_limits.check_limits(user_id, file_size)
+        is_allowed, error_msg  = user_limits.check_limits(user_id, file_size)
         if not is_allowed:
             bot_message = await message.answer(error_msg)
             asyncio.create_task(delete_message_after_delay(bot_message, delay=10))
@@ -836,7 +834,9 @@ async def handle_document(message: Message, state: FSMContext):
 
         # Если лимит позволяет, СРАЗУ увеличиваем счетчик ВНУТРИ блокировки
         user_limits.increment_counter(user_id)
-        
+        max_files = user_limits.max_files
+        files_today_count = user_limits.user_data[user_id]['files_today']
+
     # --- Операции вне блокировки (загрузка, сохранение) ---
     try:
         # Добавляем цифры к имени файла, если нужно, чтобы избежать конфликта между файлами
@@ -907,10 +907,17 @@ async def check_limits(message: Message):
 
     user_id = message.from_user.id
     now = datetime.now(timezone.utc)
-    is_allowed, error_msg, files_today_count, max_files, time_left, hours_left, minutes_left  = user_limits.check_limits(user_id, 0)
-    max_size = user_limits.max_size
-    files_left = max_files - files_used
-
+    is_allowed, error_msg  = user_limits.check_limits(user_id, 0)
+    next_reset = user_limits.last_global_reset + timedelta(days=1)
+    time_left = next_reset - now
+    hours_left = time_left.seconds // 3600
+    minutes_left = (time_left.seconds % 3600) // 60
+   
+    max_files = user_limits.max_files
+    max_size = user_limits.max_size
+    files_used = user_limits.user_data[user_id]['files_today']
+    files_left = max_files - files_used
+    
     bot_message = await message.answer(
         f"📊 Ваши лимиты:\n"
         f"• Использовано файлов: {files_used}/{max_files}\n"
