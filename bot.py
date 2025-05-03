@@ -138,7 +138,7 @@ class UserLimits:
         if files_today == self.max_files:
             return False, f"❌ Лимит исчерпан ({self.max_files}/{self.max_files}). Сброс через {hours_left} ч. {minutes_left} мин. (в 00:00 UTC)."
 
-        return True, "", files_today_count, self.max_files, time_left, hours_left, minutes_left 
+        return True, "", files_today, self.max_files, time_left, hours_left, minutes_left 
 
     def increment_counter(self, user_id):
         """Увеличивает счетчик файлов пользователя."""
