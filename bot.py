@@ -907,7 +907,7 @@ async def check_limits(message: Message):
 
     user_id = message.from_user.id
     now = datetime.now(timezone.utc)
-    is_allowed, error_msg, files_today_count, max_files, time_left, hours_left, minutes_left  = user_limits.check_limits(user_id, file_size)
+    is_allowed, error_msg, files_today_count, max_files, time_left, hours_left, minutes_left  = user_limits.check_limits(user_id, 0)
     max_size = user_limits.max_size
     files_left = max_files - files_used
 
