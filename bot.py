@@ -12,6 +12,7 @@ import aiogram
 from docx import Document
 from docx.shared import Inches
 import io
+import base64
 import posixpath
 from docxcompose.composer import Composer
 from bs4 import BeautifulSoup
@@ -130,7 +131,7 @@ class UserLimits:
         # Проверяем лимиты
         if file_size > self.max_size * 1024 * 1024:  # Допустимый размер файла
             return False, f"❌ Размер файла превышает {self.max_size} MB."
-            
+
         if self.user_data[user_id]['files_today'] == self.max_files:
             time_left = (self.last_global_reset + timedelta(days=1)) - now
             hours_left = time_left.seconds // 3600
@@ -226,7 +227,7 @@ def timer(func):
     return wrapper
 
 # Замените токен на свой
-API_TOKEN = os.getenv("API_TOKEN")
+API_TOKEN = os.getenv("API_TOKEN")
 bot = Bot(token=API_TOKEN)
 router = Router()
 
@@ -241,12 +242,11 @@ async def run_in_threadpool(func, *args, **kwargs):
 # Неблокирующие версии функций конвертации
 async def convert_epub_to_docx(epub_file, docx_file):
     def _convert():
+        document = Document()
         try:
             # Открываем EPUB-файл
             book = epub.read_epub(epub_file)
-            document = Document()
             spine_ids = [item[0] for item in book.spine]  # [ 'titlepage', 'Section0001.html', ... ]
-            ordered_items = []
             # Перебираем элементы книги
             for id_ in spine_ids:
                 item = book.get_item_with_id(id_)
@@ -278,10 +278,7 @@ async def convert_epub_to_docx(epub_file, docx_file):
                             if src:
                                 try:
                                     # Формируем полный путь к изображению внутри EPUB
-                                    # Используем posixpath для корректного объединения путей
-                                    # normpath убирает вещи вроде '../'
                                     image_href = posixpath.normpath(posixpath.join(html_base_path, src))
-
                                     # Ищем элемент изображения в книге по его пути (href)
                                     img_item = book.get_item_with_href(image_href)
 
@@ -292,14 +289,9 @@ async def convert_epub_to_docx(epub_file, docx_file):
                                         image_stream = io.BytesIO(image_data)
 
                                         # Добавляем изображение в документ
-                                        # Изображение добавляется как новый параграф.
-                                        # Можно задать ширину (или высоту), чтобы избежать слишком больших картинок
-                                        # Ширина в 6 дюймов обычно хорошо подходит для страницы A4.
                                         document.add_picture(image_stream, width=Inches(5.5))
-
                                     else:
                                         print(f"Предупреждение: Не найден элемент изображения или тип не ITEM_IMAGE для href: {image_href} (src: {src})")
-
                                 except KeyError:
                                     # Если get_item_with_href не нашел элемент
                                      print(f"Предупреждение: Не найден элемент изображения в манифесте EPUB для href: {image_href} (src: {src}) в файле {item.get_name()}")
@@ -307,8 +299,6 @@ async def convert_epub_to_docx(epub_file, docx_file):
                                     print(f"Ошибка при обработке изображения {src} в файле {item.get_name()}: {img_e}")
         except Exception as e:
             print(f"Ошибка конвертации EPUB {epub_file}: {e}")
-            # Создаем пустой docx или с сообщением об ошибке, чтобы процесс не падал
-            document = Document()
             document.add_paragraph(f"Ошибка конвертации файла {os.path.basename(epub_file)}: {e}")
         finally:
             document.save(docx_file)
@@ -317,12 +307,25 @@ async def convert_epub_to_docx(epub_file, docx_file):
 
 async def convert_fb2_to_docx(fb2_file, docx_file):
     def _convert():
+        document = Document()
+        image_data_map = {} # Словарь для раскодированных изображений {id: image_bytes}
         try:
             with open(fb2_file, 'r', encoding='utf-8') as f:
                 content = f.read()
             soup = BeautifulSoup(content, 'xml')
-            document = Document()
-            for element in soup.find_all():
+            # Извлечение и декодирование всех изображений
+            for binary_tag in soup.find_all('binary'):
+                image_id = binary_tag.get('id')
+                content_type = binary_tag.get('content-type', '')
+                data = binary_tag.text.strip()
+                if image_id and data and content_type.startswith('image/'):
+                    try:
+                        image_bytes = base64.b64decode(data)
+                        image_data_map[image_id] = image_bytes
+                    except Exception as b64e:
+                        print(f"FB2: Ошибка декодирования base64 для ID '{image_id}': {b64e}")
+            # Парсим остальные части документа
+            for element in soup.find_all(['title', 'p', 'image']):
                 if element.name == 'title':
                     document.add_heading(element.get_text(), level=0)
                 elif element.name == 'p':
@@ -341,14 +344,30 @@ async def convert_fb2_to_docx(fb2_file, docx_file):
                                     doc_paragraph.add_run(sub.get_text())
                             else:
                                 doc_paragraph.add_run(sub)
+                # Обработка тега image
+                elif element.name == 'image':
+                    href_attr = element.get('l:href') or element.get('xlink:href')
+                    if href_attr and href_attr.startswith('#'):
+                        image_id_ref = href_attr[1:]
+                        if image_id_ref in image_data_map:
+                            image_bytes = image_data_map[image_id_ref]
+                            try:
+                                image_stream = io.BytesIO(image_bytes)
+                                document.add_picture(image_stream, width=Inches(5.5))
+                            except Exception as img_e:
+                                print(f"FB2: Ошибка добавления изображения '{image_id_ref}' в DOCX: {img_e}")
+                                document.add_paragraph(f"[Ошибка добавления изображения: {image_id_ref}]")
+                        else:
+                            print(f"FB2: Данные для изображения '{image_id_ref}' не найдены.")
+                            document.add_paragraph(f"[Изображение не найдено: {image_id_ref}]")
+                    else:
+                        print(f"FB2: Тег <image> без корректной ссылки: {element}")
+                        document.add_paragraph("[Некорректный тег image]")
         except Exception as e:
             print(f"Ошибка конвертации FB2 {fb2_file}: {e}")
-            # Создаем пустой docx или с сообщением об ошибке, чтобы процесс не падал
-            document = Document()
             document.add_paragraph(f"Ошибка конвертации файла {os.path.basename(fb2_file)}: {e}")
         finally:
             document.save(docx_file)
-
     return await run_in_threadpool(_convert)
 
 async def convert_txt_to_docx(txt_file, docx_file):
@@ -579,7 +598,7 @@ async def cancel_collecting(message: Message, state: FSMContext):
         files_today_count = user_limits.user_data[user_id]['files_today']
     else:
         files_today_count = 0
-        
+
     # Удаляем временные файлы
     for file_item in file_list:
         file = file_item[0]
@@ -912,12 +931,12 @@ async def check_limits(message: Message):
     time_left = next_reset - now
     hours_left = time_left.seconds // 3600
     minutes_left = (time_left.seconds % 3600) // 60
-   
+
     max_files = user_limits.max_files
     max_size = user_limits.max_size
     files_used = user_limits.user_data[user_id]['files_today']
     files_left = max_files - files_used
-    
+
     bot_message = await message.answer(
         f"📊 Ваши лимиты:\n"
         f"• Использовано файлов: {files_used}/{max_files}\n"
