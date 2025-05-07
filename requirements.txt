@@ -5,3 +5,4 @@ ebooklib
 aiogram
 aiofiles
 nest_asyncio
+pillow
