@@ -11,7 +11,9 @@ import docx
 import aiogram
 from docx import Document
 from docx.shared import Inches
+from PIL import Image
 import io
+from io import BytesIO
 import base64
 import posixpath
 from docxcompose.composer import Composer
@@ -227,7 +229,7 @@ def timer(func):
     return wrapper
 
 # Замените токен на свой
-API_TOKEN = os.getenv("API_TOKEN")
+API_TOKEN = os.getenv("API_TOKEN") 
 bot = Bot(token=API_TOKEN)
 router = Router()
 
@@ -285,11 +287,19 @@ async def convert_epub_to_docx(epub_file, docx_file):
                                     if img_item and img_item.get_type() == ebooklib.ITEM_IMAGE:
                                         # Получаем бинарные данные изображения
                                         image_data = img_item.content
-                                        # Оборачиваем данные в BytesIO, чтобы python-docx мог их прочитать
-                                        image_stream = io.BytesIO(image_data)
-
-                                        # Добавляем изображение в документ
-                                        document.add_picture(image_stream, width=Inches(5.5))
+                                        try:
+                                            # Оборачиваем данные в BytesIO, чтобы python-docx мог их прочитать
+                                            image_stream = io.BytesIO(image_data)
+                                            # Добавляем изображение в документ
+                                            document.add_picture(image_stream, width=Inches(5.5))
+                                        except:
+                                            try:
+                                                f = io.BytesIO()
+                                                Image.open(io.BytesIO(image_data)).convert('RGB').save(f, format='JPEG')
+                                                document.add_picture(f, width=Inches(5.5))
+                                            except Exception as img_e:
+                                                print(f"FB2: Ошибка добавления изображения '{image_id_ref}' в DOCX: {img_e}")
+                                                document.add_paragraph(f"[Ошибка добавления изображения: {image_id_ref}]")
                                     else:
                                         print(f"Предупреждение: Не найден элемент изображения или тип не ITEM_IMAGE для href: {image_href} (src: {src})")
                                 except KeyError:
@@ -354,9 +364,15 @@ async def convert_fb2_to_docx(fb2_file, docx_file):
                             try:
                                 image_stream = io.BytesIO(image_bytes)
                                 document.add_picture(image_stream, width=Inches(5.5))
-                            except Exception as img_e:
-                                print(f"FB2: Ошибка добавления изображения '{image_id_ref}' в DOCX: {img_e}")
-                                document.add_paragraph(f"[Ошибка добавления изображения: {image_id_ref}]")
+                            except:
+                                try:
+                                    f = io.BytesIO()
+                                    Image.open(io.BytesIO(image_bytes)).convert('RGB').save(f, format='JPEG')
+                                    # f.seek(0)
+                                    document.add_picture(f, width=Inches(5.5))
+                                except Exception as img_e:
+                                    print(f"FB2: Ошибка добавления изображения '{image_id_ref}' в DOCX: {img_e}")
+                                    document.add_paragraph(f"[Ошибка добавления изображения: {image_id_ref}]")
                         else:
                             print(f"FB2: Данные для изображения '{image_id_ref}' не найдены.")
                             document.add_paragraph(f"[Изображение не найдено: {image_id_ref}]")
