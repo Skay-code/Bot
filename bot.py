@@ -913,7 +913,7 @@ async def handle_document(message: Message, state: FSMContext):
         list_delete_message.append(bot_message.message_id)
         await state.update_data(list_delete_message=list_delete_message)
     except Exception as e:
-        await message.answer(f"Ошибка при сохранении файла: {str(e)}")
+        await message.answer(f"Ошибка при сохранении файла: {repr(e)}")
 
 @router.message(Command("start"))
 async def send_welcome(message: Message):
