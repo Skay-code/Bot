@@ -1,8 +1,9 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Установка зависимостей
-#!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
+!pip install python-docx docxcompose beautifulsoup4 ebooklib aiogram aiofiles nest_asyncio
 
 import os
 import re
@@ -229,7 +230,7 @@ def timer(func):
     return wrapper
 
 # Замените токен на свой
-API_TOKEN = os.getenv("API_TOKEN") 
+API_TOKEN = '8166003091:AAGpwWqsWyCH2LdjJxSifia-94kmc5n-jX0'
 bot = Bot(token=API_TOKEN)
 router = Router()
 
@@ -257,7 +258,7 @@ async def convert_epub_to_docx(epub_file, docx_file):
                     html_base_path = posixpath.dirname(item.get_name())
                     for element in soup.find_all():
                         if element.name == 'h1':
-                            document.add_heading(element.get_text(), level=1)
+                            document.add_heading(element.get_text(), level=0)
                         elif element.name == 'p':
                             doc_paragraph = document.add_paragraph()
                             # Перебор вложенных элементов абзаца
@@ -337,7 +338,7 @@ async def convert_fb2_to_docx(fb2_file, docx_file):
             # Парсим остальные части документа
             for element in soup.find_all(['title', 'p', 'image']):
                 if element.name == 'title':
-                    document.add_heading(element.get_text(), level=1)
+                    document.add_heading(element.get_text(), level=0)
                 elif element.name == 'p':
                     # Если абзац не является частью title или annotation
                     if element.find_parent(['title', 'annotation']) is None:
@@ -439,11 +440,11 @@ def check_and_add_title(doc, file_name):
     patterns = [
         r'Глава[ ]{0,4}\d{1,4}',
         r'Часть[ ]{0,4}\d{1,4}',
-        r'Пролог[ .!]*',
-        r'Описание[ .!]*',
-        r'Аннотация[ .!]*',
-        r'Annotation[ .!]*',
-        r'Предисловие от автора[ .!]*'
+        r'^Пролог[ .!]*$',
+        r'^Описание[ .!]*$',
+        r'^Аннотация[ .!]*$',
+        r'^Annotation[ .!]*$',
+        r'^Предисловие от автора[ .!]*$'
     ]
     if doc.paragraphs:
         check_paragraphs = doc.paragraphs[0:4]
@@ -456,23 +457,32 @@ def check_and_add_title(doc, file_name):
         if not title_found:
             for p in check_paragraphs:
                 for pattern in patterns:
-                    if re.fullmatch(pattern, p.text.strip()):
+                    if re.search(pattern, p.text.strip()):
                         title_found = True
                         break
                 if title_found:
                     break
         if not title_found:
             # Добавляем заголовок перед первым абзацем
+            style_names = ['Heading 1', 'Заголовок 1']
             title = os.path.splitext(os.path.basename(file_name))[0]
-            if re.fullmatch(r'\d+', title.strip()):
-                title = 'Глава ' + title
-            try:
-                heading = doc.add_heading(title, level=1)
-                # Переместим его в начало
-                doc._body._element.insert(0, heading._element)
-            except Exception as e:
-                paragraph = doc.paragraphs[0].insert_paragraph_before(title)
-                print(f"Возникла ошибка при добавлении заголовка: {e}")
+            paragraph = doc.paragraphs[0].insert_paragraph_before(title)
+            for name in style_names:
+                try:
+                    paragraph.style = name
+                    break
+                except:
+                    check = Document()
+                    composer = Composer(check)
+                    composer.append(doc)
+                    composer.save(file_name)
+                    paragraph = check.paragraphs[0].insert_paragraph_before(title)
+                    try:
+                        paragraph.style = name
+                        break
+                    except Exception as e:
+                        print(f"Стиль {name} не получилось установить: {e}")
+                    doc = check
     return doc
 
 @timer
