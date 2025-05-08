@@ -467,7 +467,7 @@ def check_and_add_title(doc, file_name):
             if re.fullmatch(r'\d+', title.strip()):
                 title = 'Глава ' + title
             try:
-                heading = doc.add_heading('Заголовок', level=1)
+                heading = doc.add_heading(title, level=1)
                 # Переместим его в начало
                 doc._body._element.insert(0, heading._element)
             except Exception as e:
