@@ -465,9 +465,9 @@ def check_and_add_title(doc, file_name):
             # Добавляем заголовок перед первым абзацем
             style_names = ['Heading 1', 'Заголовок 1']
             title = os.path.splitext(os.path.basename(file_name))[0]
-            doc.add_heading(title, level=1)
+            heading = doc.add_heading('Заголовок', level=1)
             # Переместим его в начало
-            # doc._body._element.insert(0, heading._element)
+            doc._body._element.insert(0, heading._element)
     return doc
 
 @timer
