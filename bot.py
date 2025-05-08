@@ -439,11 +439,11 @@ def check_and_add_title(doc, file_name):
     patterns = [
         r'Глава[ ]{0,4}\d{1,4}',
         r'Часть[ ]{0,4}\d{1,4}',
-        r'^Пролог[ .!]*$',
-        r'^Описание[ .!]*$',
-        r'^Аннотация[ .!]*$',
-        r'^Annotation[ .!]*$',
-        r'^Предисловие от автора[ .!]*$'
+        r'Пролог[ .!]*',
+        r'Описание[ .!]*',
+        r'Аннотация[ .!]*',
+        r'Annotation[ .!]*',
+        r'Предисловие от автора[ .!]*'
     ]
     if doc.paragraphs:
         check_paragraphs = doc.paragraphs[0:4]
@@ -456,18 +456,23 @@ def check_and_add_title(doc, file_name):
         if not title_found:
             for p in check_paragraphs:
                 for pattern in patterns:
-                    if re.search(pattern, p.text.strip()):
+                    if re.fullmatch(pattern, p.text.strip()):
                         title_found = True
                         break
                 if title_found:
                     break
         if not title_found:
             # Добавляем заголовок перед первым абзацем
-            style_names = ['Heading 1', 'Заголовок 1']
             title = os.path.splitext(os.path.basename(file_name))[0]
-            heading = doc.add_heading('Заголовок', level=1)
-            # Переместим его в начало
-            doc._body._element.insert(0, heading._element)
+            if re.fullmatch(r'\d+', title.strip()):
+                title = 'Глава ' + title
+            try:
+                heading = doc.add_heading('Заголовок', level=1)
+                # Переместим его в начало
+                doc._body._element.insert(0, heading._element)
+            except Exception as e:
+                paragraph = doc.paragraphs[0].insert_paragraph_before(title)
+                print(f"Возникла ошибка при добавлении заголовка: {e}")
     return doc
 
 @timer
