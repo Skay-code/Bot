@@ -257,7 +257,7 @@ async def convert_epub_to_docx(epub_file, docx_file):
                     html_base_path = posixpath.dirname(item.get_name())
                     for element in soup.find_all():
                         if element.name == 'h1':
-                            document.add_heading(element.get_text(), level=0)
+                            document.add_heading(element.get_text(), level=1)
                         elif element.name == 'p':
                             doc_paragraph = document.add_paragraph()
                             # Перебор вложенных элементов абзаца
@@ -337,7 +337,7 @@ async def convert_fb2_to_docx(fb2_file, docx_file):
             # Парсим остальные части документа
             for element in soup.find_all(['title', 'p', 'image']):
                 if element.name == 'title':
-                    document.add_heading(element.get_text(), level=0)
+                    document.add_heading(element.get_text(), level=1)
                 elif element.name == 'p':
                     # Если абзац не является частью title или annotation
                     if element.find_parent(['title', 'annotation']) is None:
