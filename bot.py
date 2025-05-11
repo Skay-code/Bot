@@ -135,7 +135,7 @@ class UserLimits:
         if file_size > self.max_size * 1024 * 1024:  # Допустимый размер файла
             return False, f"❌ Размер файла превышает {self.max_size} MB."
 
-        if user_id in seld.admins:
+        if user_id in self.admins:
             return True, ""
             
         if self.user_data[user_id]['files_today'] == self.max_files:
