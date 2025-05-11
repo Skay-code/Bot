@@ -431,6 +431,12 @@ async def process_files(file_list):
     return converted_files
 
 # ===================== Неблокирующие функции для работы с документами =====
+def safe_docx(doc):
+    check = Document()
+    composer = Composer(check)
+    composer.append(doc)
+    return check
+    
 def check_and_add_title(doc, file_name):
     """
     Проверяет первые абзацы документа на наличие заголовка (например, "Глава ...").
@@ -448,6 +454,7 @@ def check_and_add_title(doc, file_name):
     if doc.paragraphs:
         check_paragraphs = doc.paragraphs[0:4]
         title_found = False
+        c = 0
         for p in check_paragraphs:
             if any(p.style.name.lower().startswith(prefix) for prefix in ["heading", "заголовок"]):
                 title_found = True
@@ -458,21 +465,36 @@ def check_and_add_title(doc, file_name):
                 for pattern in patterns:
                     if re.fullmatch(pattern, p.text.strip()):
                         title_found = True
+                        try:
+                            p.style = 'Heading 1'
+                        except Exception as e:
+                            try:
+                                doc = safe_docx(doc)
+                                p = doc.paragraphs[c]
+                                p.style = 'Heading 1'
+                            except Exception as e:
+                                print(f"Возникла ошибка при создании заголовка: {e}")
                         break
                 if title_found:
                     break
+                c = c+1
+
         if not title_found:
             # Добавляем заголовок перед первым абзацем
             title = os.path.splitext(os.path.basename(file_name))[0]
             if re.fullmatch(r'\d+', title.strip()):
                 title = 'Глава ' + title
             try:
-                heading = doc.add_heading(title, level=1)
-                # Переместим его в начало
-                doc._body._element.insert(0, heading._element)
-            except Exception as e:
                 paragraph = doc.paragraphs[0].insert_paragraph_before(title)
-                print(f"Возникла ошибка при добавлении заголовка: {e}")
+                paragraph.style = 'Heading 1'
+            except:
+                try:
+                    doc = safe_docx(doc)
+                    paragraph = doc.paragraphs[0]
+                    paragraph.style = 'Heading 1'
+                    return doc
+                except Exception as e:
+                    print(f"Возникла ошибка при добавлении заголовка: {e}")
     return doc
 
 @timer
