@@ -105,7 +105,8 @@ class UserLimits:
         self.user_locks = {} # Словарь для хранения блокировок пользователей
         self.max_files = max_files
         self.max_size = max_size
-
+        self.admins = [5787446293]
+        
     def _get_last_utc_midnight(self):
         """Возвращает последнюю полночь по UTC."""
         now = datetime.now(timezone.utc)
@@ -134,6 +135,9 @@ class UserLimits:
         if file_size > self.max_size * 1024 * 1024:  # Допустимый размер файла
             return False, f"❌ Размер файла превышает {self.max_size} MB."
 
+        if user_id in seld.admins:
+            return True, ""
+            
         if self.user_data[user_id]['files_today'] == self.max_files:
             time_left = (self.last_global_reset + timedelta(days=1)) - now
             hours_left = time_left.seconds // 3600
