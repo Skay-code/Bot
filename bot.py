@@ -449,11 +449,11 @@ def check_and_add_title(doc, file_name):
     patterns = [
         r'Глава[ ]{0,4}\d{1,4}',
         r'Часть[ ]{0,4}\d{1,4}',
-        r'Пролог[ .!]*',
-        r'Описание[ .!]*',
-        r'Аннотация[ .!]*',
-        r'Annotation[ .!]*',
-        r'Предисловие от автора[ .!]*'
+        r'^Пролог[ .!]*$',
+        r'^Описание[ .!]*$',
+        r'^Аннотация[ .!]*$',
+        r'^Annotation[ .!]*$',
+        r'^Предисловие от автора[ .!]*$'
     ]
     if doc.paragraphs:
         check_paragraphs = doc.paragraphs[0:4]
@@ -467,7 +467,7 @@ def check_and_add_title(doc, file_name):
         if not title_found:
             for p in check_paragraphs:
                 for pattern in patterns:
-                    if re.fullmatch(pattern, p.text.strip()):
+                    if re.search(pattern, p.text.strip()):
                         title_found = True
                         try:
                             p.style = 'Heading 1'
