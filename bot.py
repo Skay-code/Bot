@@ -292,18 +292,12 @@ async def convert_epub_to_docx(epub_file, docx_file):
                                         # Получаем бинарные данные изображения
                                         image_data = img_item.content
                                         try:
-                                            # Оборачиваем данные в BytesIO, чтобы python-docx мог их прочитать
-                                            image_stream = io.BytesIO(image_data)
-                                            # Добавляем изображение в документ
-                                            document.add_picture(image_stream, width=Inches(5.5))
-                                        except:
-                                            try:
-                                                f = io.BytesIO()
-                                                Image.open(io.BytesIO(image_data)).convert('RGB').save(f, format='JPEG')
-                                                document.add_picture(f, width=Inches(5.5))
-                                            except Exception as img_e:
-                                                print(f"FB2: Ошибка добавления изображения '{image_id_ref}' в DOCX: {img_e}")
-                                                document.add_paragraph(f"[Ошибка добавления изображения: {image_id_ref}]")
+                                            f = io.BytesIO()
+                                            Image.open(io.BytesIO(image_data)).convert('RGB').save(f, format='JPEG', quality=70)
+                                            document.add_picture(f, width=Inches(5.5))
+                                        except Exception as img_e:
+                                            print(f"EPUB: Ошибка добавления изображения '{image_href}' в DOCX: {img_e}")
+                                            document.add_paragraph(f"[Ошибка добавления изображения: {image_href}]")
                                     else:
                                         print(f"Предупреждение: Не найден элемент изображения или тип не ITEM_IMAGE для href: {image_href} (src: {src})")
                                 except KeyError:
@@ -366,17 +360,12 @@ async def convert_fb2_to_docx(fb2_file, docx_file):
                         if image_id_ref in image_data_map:
                             image_bytes = image_data_map[image_id_ref]
                             try:
-                                image_stream = io.BytesIO(image_bytes)
-                                document.add_picture(image_stream, width=Inches(5.5))
-                            except:
-                                try:
-                                    f = io.BytesIO()
-                                    Image.open(io.BytesIO(image_bytes)).convert('RGB').save(f, format='JPEG')
-                                    # f.seek(0)
-                                    document.add_picture(f, width=Inches(5.5))
-                                except Exception as img_e:
-                                    print(f"FB2: Ошибка добавления изображения '{image_id_ref}' в DOCX: {img_e}")
-                                    document.add_paragraph(f"[Ошибка добавления изображения: {image_id_ref}]")
+                                f = io.BytesIO()
+                                Image.open(io.BytesIO(image_bytes)).convert('RGB').save(f, format='JPEG', quality=70)
+                                document.add_picture(f, width=Inches(5.5))
+                            except Exception as img_e:
+                                print(f"FB2: Ошибка добавления изображения '{image_id_ref}' в DOCX: {img_e}")
+                                document.add_paragraph(f"[Ошибка добавления изображения: {image_id_ref}]")
                         else:
                             print(f"FB2: Данные для изображения '{image_id_ref}' не найдены.")
                             document.add_paragraph(f"[Изображение не найдено: {image_id_ref}]")
